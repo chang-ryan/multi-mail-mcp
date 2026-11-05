@@ -115,7 +115,16 @@ into that folder; `examples/all.mcp.json` opens every account with saving off. E
 }
 ```
 
-Use an absolute `node` path: harnesses do not load nvm.
+Use an absolute `node` path: harnesses do not load nvm. Prefer one that survives Node upgrades
+(e.g. Homebrew's `/opt/homebrew/bin/node`, or a symlink you repoint) over a versioned
+`~/.nvm/versions/node/vX.Y.Z/bin/node`, which breaks when that version is removed.
+
+These configs are personal (machine paths, which accounts a folder may open), so keep them on your
+machine, outside this repository: in the folders that should see mail, as above, or in Claude
+Code's own settings with `claude mcp add --scope local` (this folder only) or `--scope user` (every
+folder), which are stored in `~/.claude.json`. The files in `examples/` are templates. If you do
+put a config in this repository folder, `.mcp.json`, `*.local.json` and `.claude/settings.local.json`
+are gitignored so it is not committed.
 
 ## Gmail OAuth setup and migration
 
