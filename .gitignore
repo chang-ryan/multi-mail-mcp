@@ -5,3 +5,8 @@ bridge.json
 
 # Personal registries belong outside this repository.
 /accounts.json
+
+# OAuth downloads and tokens must never be committed.
+client_secret*.json
+credentials*.json
+*token*.json

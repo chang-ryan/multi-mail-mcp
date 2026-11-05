@@ -1,0 +1,23 @@
+{
+  "accounts": {
+    "acme": { "type": "proton", "user": "ops@acme-holdings.example", "label": "Acme Holdings LLC" },
+    "personal": {
+      "type": "gmail",
+      "user": "you@gmail.example",
+      "label": "Personal",
+      "backend": "gmail-api"
+    },
+    "jaw": {
+      "type": "gmail",
+      "user": "you@company.example",
+      "label": "Company",
+      "backend": "gmail-api"
+    },
+    "legacy": {
+      "type": "gmail",
+      "user": "legacy@gmail.example",
+      "label": "Gmail IMAP",
+      "backend": "imap"
+    }
+  }
+}
