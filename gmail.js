@@ -27,8 +27,16 @@ export function messageId(uid) {
 const READ_PATH = /^(?:profile|labels|messages|messages\/[a-f0-9]{1,32}|threads\/[a-f0-9]{1,32})$/;
 export function createGmailClient(
   account,
-  { tokens = tokenManager, fetchImpl = fetch, signal } = {},
+  {
+    tokens = tokenManager,
+    fetchImpl = fetch,
+    signal,
+    maxOperationBytes = 128 * 1024 * 1024,
+    maxRequests = 500,
+  } = {},
 ) {
+  let downloaded = 0;
+  let requests = 0;
   return {
     async get(resource, params = {}, maxBytes = 1024 * 1024) {
       if (!READ_PATH.test(resource)) throw new Error('Read-only Gmail resource refused');
@@ -37,12 +45,28 @@ export function createGmailClient(
         for (const item of [].concat(value)) url.searchParams.append(key, String(item));
       }
       for (let attempt = 0; attempt < 2; attempt++) {
+        if (++requests > maxRequests) {
+          throw new Error(
+            'Gmail operation request limit reached; narrow folders/search or reduce limit',
+          );
+        }
         const access = await tokens.get(account, signal);
         try {
           return await googleJson(
             url.toString(),
             { method: 'GET', headers: { Authorization: `Bearer ${access}` }, signal },
-            { fetchImpl, maxBytes },
+            {
+              fetchImpl,
+              maxBytes,
+              onBytes: (bytes) => {
+                downloaded += bytes;
+                if (downloaded > maxOperationBytes) {
+                  throw new Error(
+                    'Gmail operation download budget exceeded; narrow search or choose a smaller message/thread',
+                  );
+                }
+              },
+            },
           );
         } catch (err) {
           if (err.status === 401 && attempt === 0) {

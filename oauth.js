@@ -32,6 +32,13 @@ function keychainRead(id) {
 export function keychainWrite(id, credential) {
   if (!ID.test(id)) throw new Error('Invalid Keychain account id');
   const encoded = Buffer.from(JSON.stringify(credential)).toString('base64url');
+  const command = `add-generic-password -U -s ${OAUTH_SERVICE} -a ${id} -w ${encoded}\n`;
+  // security's interactive parser has a 4096-byte line buffer. A truncated update could
+  // replace a working credential with invalid data before the read-back detects failure.
+  if (Buffer.byteLength(command) >= 4096)
+    throw new Error(
+      'OAuth credential exceeds the Keychain command limit; existing credential was not changed',
+    );
   return new Promise((resolve, reject) => {
     const child = spawn('/usr/bin/security', ['-i'], {
       stdio: ['pipe', 'ignore', 'pipe'],
@@ -72,7 +79,7 @@ export function keychainWrite(id, credential) {
         reject(new Error('Could not verify OAuth credential stored in macOS Keychain'));
       }
     });
-    child.stdin.end(`add-generic-password -U -s ${OAUTH_SERVICE} -a ${id} -w ${encoded}\n`);
+    child.stdin.end(command);
   });
 }
 
@@ -254,6 +261,8 @@ export async function loopbackAuthorization(
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     if (req.method !== 'GET' || req.headers.host !== expectedHost) {
       res.writeHead(400).end('Invalid callback');
       return;
@@ -267,6 +276,14 @@ export async function loopbackAuthorization(
     }
     if (url.pathname !== '/oauth/callback') {
       res.writeHead(404).end('Not found');
+      return;
+    }
+    const issuers = url.searchParams.getAll('iss');
+    if (
+      issuers.length > 1 ||
+      (issuers.length === 1 && issuers[0] !== 'https://accounts.google.com')
+    ) {
+      res.writeHead(400).end('Invalid OAuth issuer');
       return;
     }
     const received = url.searchParams.getAll('state');

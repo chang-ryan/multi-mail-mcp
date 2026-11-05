@@ -9,6 +9,7 @@ import { GMAIL_ROOT, googleJson, SCOPE, TOKEN_URL } from '../google-http.js';
 import {
   authorize,
   createTokenManager,
+  keychainWrite,
   loopbackAuthorization,
   readDesktopClient,
   validateScope,
@@ -105,9 +106,14 @@ test('PKCE loopback flow rejects invalid state and host, then accepts the origin
         request.on('error', reject);
       });
       assert.equal(wrongHostStatus, 400);
+      callback.searchParams.set('iss', 'https://attacker.example');
+      assert.equal((await fetch(callback)).status, 400);
+      callback.searchParams.set('iss', 'https://accounts.google.com');
       const response = await fetch(callback);
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+      assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     },
   });
   assert.equal(result.code, 'test-code');
@@ -279,7 +285,7 @@ test('HTTP rejects redirects, limits streaming bytes and sanitizes failures', as
   await assert.rejects(
     googleJson(
       TOKEN_URL,
-      {},
+      { method: 'POST' },
       {
         maxBytes: 3,
         fetchImpl: async (_url, options) => {
@@ -293,9 +299,50 @@ test('HTTP rejects redirects, limits streaming bytes and sanitizes failures', as
   await assert.rejects(
     googleJson(
       TOKEN_URL,
-      {},
+      { method: 'POST' },
       { fetchImpl: async () => json({ error: { message: 'do-not-echo' } }, 403) },
     ),
     (e) => e.status === 403 && !e.message.includes('do-not-echo'),
+  );
+});
+
+test('credentials cannot be sent to another origin, user, resource, or mutation endpoint', async () => {
+  let requests = 0;
+  for (const [url, method] of [
+    ['https://attacker.example/token', 'POST'],
+    ['http://oauth2.googleapis.com/token', 'POST'],
+    [`${TOKEN_URL}?redirect=1`, 'POST'],
+    [TOKEN_URL, 'GET'],
+    [`${GMAIL_ROOT}profile`, 'POST'],
+    ['https://gmail.googleapis.com/gmail/v1/users/other/profile', 'GET'],
+    [`${GMAIL_ROOT}messages/abc/trash`, 'POST'],
+    [`${GMAIL_ROOT}messages/abc?query=x#fragment`, 'GET'],
+    ['https://user:password@gmail.googleapis.com/gmail/v1/users/me/profile', 'GET'],
+  ]) {
+    await assert.rejects(
+      googleJson(
+        url,
+        { method, headers: { Authorization: 'Bearer never-send' } },
+        {
+          fetchImpl: async () => {
+            requests++;
+            return json({});
+          },
+        },
+      ),
+      /destination|method/,
+    );
+  }
+  assert.equal(requests, 0);
+});
+
+test('oversized and invalid Keychain commands fail before spawning or replacing credentials', () => {
+  assert.throws(
+    () => keychainWrite('personal', { refresh_token: 'x'.repeat(4096) }),
+    /existing credential was not changed/,
+  );
+  assert.throws(
+    () => keychainWrite('personal\nother-command', credential),
+    /Invalid Keychain account id/,
   );
 });

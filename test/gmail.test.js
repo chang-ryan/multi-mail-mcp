@@ -344,3 +344,72 @@ test('both backends retain a bound on serialized MCP payload size', () => {
   assert.throws(() => serializeResult({ body: 'x'.repeat(3 * 1024 * 1024) }), /Result exceeds/);
   assert.ok(serializeResult({ content_base64: Buffer.alloc(2 * 1024 * 1024).toString('base64') }));
 });
+
+test('Gmail reads share a cumulative download budget and stop/cancel before parsing excess data', async () => {
+  let requests = 0,
+    cancelled = false;
+  const api = gmail.createGmailClient(
+    { id: 'personal' },
+    {
+      tokens: { get: async () => 'test-token' },
+      maxOperationBytes: 10,
+      fetchImpl: async () => {
+        requests++;
+        // Two individually small responses exceed the shared operation budget.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from('{"ok":true}'));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        );
+      },
+    },
+  );
+  // The first response must end; the second deliberately stalls after the budget breach.
+  const first = gmail.createGmailClient(
+    { id: 'personal' },
+    {
+      tokens: { get: async () => 'test-token' },
+      maxOperationBytes: 15,
+      fetchImpl: async () => {
+        requests++;
+        return new Response('{"ok":true}');
+      },
+    },
+  );
+  assert.deepEqual(await first.get('labels'), { ok: true });
+  await assert.rejects(first.get('labels'), /download budget/);
+  // A single streamed chunk over the operation budget cancels an otherwise unending body.
+  await assert.rejects(api.get('labels', {}, 1024), /download budget/);
+  assert.equal(cancelled, true);
+  assert.equal(requests, 3);
+});
+
+test('Gmail request budgets count retries and reject more requests before credential access', async () => {
+  let credentials = 0,
+    requests = 0;
+  const api = gmail.createGmailClient(
+    { id: 'personal' },
+    {
+      maxRequests: 1,
+      tokens: {
+        get: async () => {
+          credentials++;
+          return 'test-token';
+        },
+        invalidate() {},
+      },
+      fetchImpl: async () => {
+        requests++;
+        return new Response('{}', { status: 401 });
+      },
+    },
+  );
+  await assert.rejects(api.get('labels'), /request limit/);
+  assert.equal(credentials, 1);
+  assert.equal(requests, 1);
+});

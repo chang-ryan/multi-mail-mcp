@@ -4,11 +4,35 @@ export const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 export const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
+function validateDestination(value, method) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Google request destination refused');
+  }
+  const credentialEndpoint = url.href === TOKEN_URL || url.href === REVOKE_URL;
+  const gmailRead =
+    url.origin === 'https://gmail.googleapis.com' &&
+    /^\/gmail\/v1\/users\/me\/(?:profile|labels|messages|messages\/[a-f0-9]{1,32}|threads\/[a-f0-9]{1,32})$/.test(
+      url.pathname,
+    );
+  if (
+    url.username ||
+    url.password ||
+    url.hash ||
+    (credentialEndpoint ? method !== 'POST' : !gmailRead || method !== 'GET')
+  ) {
+    throw new Error('Google request destination or method refused');
+  }
+}
+
 export async function googleJson(
   url,
   options = {},
-  { fetchImpl = fetch, maxBytes = 1024 * 1024 } = {},
+  { fetchImpl = fetch, maxBytes = 1024 * 1024, onBytes = () => {} } = {},
 ) {
+  validateDestination(url, options.method || 'GET');
   let response;
   try {
     response = await fetchImpl(url, {
@@ -34,6 +58,7 @@ export async function googleJson(
         if (done) break;
         total += value.byteLength;
         if (total > maxBytes) throw new Error('Google response exceeds the download limit');
+        onBytes(value.byteLength);
         chunks.push(Buffer.from(value));
       }
     } finally {

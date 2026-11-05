@@ -228,7 +228,11 @@ attachment indexes, filename sanitization, save-type restrictions, quarantine re
 non-overwrite behavior and save-root containment. Messages over 40 MB are refused, response streams
 are capped even if size estimates understate the actual data, and serialized MCP results are
 capped at 3 MB. API operations have a two-minute deadline and at most two active API reads per
-process. Gmail requests follow no redirects and only whitelisted GET resources are available.
+process. Each API operation also has a cumulative 128 MiB response budget and a 500-request cap
+(including retries); exceeding either fails with an instruction to narrow the request. These
+limits bound network work, not CPU time in the MIME parser. Gmail requests follow no redirects
+and only whitelisted GET resources are available. The shared HTTP layer separately enforces
+Google origins, account paths and request methods before sending any credentials.
 All mail output retains Unicode scrubbing and the untrusted-content label.
 
 ### Expiration, revocation and Google requirements
