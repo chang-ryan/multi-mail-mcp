@@ -218,10 +218,15 @@ backends, or transfer IDs between accounts.** An ID of the wrong backend type is
 credential access. Search/list again after switching. `message_id` remains the RFC Message-ID;
 `thread_id` is the native backend thread identifier, not a tool input.
 
-Gmail folders are exact label names from `mail__list_folders` (plus a virtual
-`[Gmail]/All Mail` that excludes spam/trash). Labels returned on message summaries are API label
-IDs, resolvable via `label_id` on folders. Search defaults to All Mail; explicitly select SPAM or
-TRASH to include them. Multiple folders are searched as a union and duplicate messages are
+Gmail folders use the same paths as the IMAP backend, so switching an account keeps its folder
+names: `INBOX`, `[Gmail]/Sent Mail`, `[Gmail]/Drafts`, `[Gmail]/Starred`, `[Gmail]/Important`,
+`[Gmail]/Spam`, `[Gmail]/Trash`, user labels by exact name, and a virtual `[Gmail]/All Mail` that
+excludes spam/trash. The raw system IDs (`SENT`, `SPAM`, `TRASH`, ...) are also accepted. Labels
+that are states or tabs rather than folders (`UNREAD`, `CHAT`, stars, inbox categories) are not
+listed; use the `unread` filter or Gmail `query` syntax such as `category:promotions`. Labels on
+message summaries match IMAP's names too: `\Inbox`, `\Sent`, `\Important`, ... and user label
+names. Search defaults to All Mail; explicitly select `[Gmail]/Spam` or `[Gmail]/Trash` to include
+them. Multiple folders are searched as a union and duplicate messages are
 collapsed. Counts are Gmail estimates, identified with `*_is_estimate: true`.
 
 `query` is native Gmail search; structured from/to/subject/text filters use Gmail's search

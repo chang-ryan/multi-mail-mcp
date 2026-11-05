@@ -104,37 +104,62 @@ export async function withGmail(account, fn) {
   });
 }
 
+// Gmail system labels under the folder paths and X-GM-LABELS names the IMAP backend shows,
+// so an account reads the same on either backend. Other system labels (UNREAD, CHAT, stars,
+// inbox categories) are states or tabs, not folders, and are hidden; the `unread` filter and
+// Gmail `query` syntax (e.g. category:promotions) still reach them.
+const SYSTEM = {
+  INBOX: { path: 'INBOX', label: '\\Inbox', special_use: '\\Inbox' },
+  SENT: { path: '[Gmail]/Sent Mail', label: '\\Sent', special_use: '\\Sent' },
+  DRAFT: { path: '[Gmail]/Drafts', label: '\\Draft', special_use: '\\Drafts' },
+  STARRED: { path: '[Gmail]/Starred', label: '\\Starred', special_use: '\\Flagged' },
+  IMPORTANT: { path: '[Gmail]/Important', label: '\\Important', special_use: '\\Important' },
+  SPAM: { path: '[Gmail]/Spam', label: '\\Spam', special_use: '\\Junk' },
+  TRASH: { path: '[Gmail]/Trash', label: '\\Trash', special_use: '\\Trash' },
+};
+// The API marks system labels with type "system"; their IDs are also all-caps (user IDs are Label_N).
+const isUserLabel = (l) => (l.type ? l.type === 'user' : !/^[A-Z_]+$/.test(l.id));
+
+// Each withGmail call builds a fresh client, so this caches one labels request per operation.
+const labelCache = new WeakMap();
 async function labels(api) {
+  if (labelCache.has(api)) return labelCache.get(api);
   const data = await api.get('labels');
   if (!Array.isArray(data.labels) || data.labels.length > 10000)
     throw new Error('Invalid or oversized Gmail labels response');
+  labelCache.set(api, data.labels);
   return data.labels;
 }
 
 async function folderLabel(api, folder) {
   if (folder === ALL) return null;
-  const list = await labels(api);
-  // Exact names from list_folders, including custom labels containing slashes.
-  const found = list.find((l) => l.name === folder);
+  // IMAP-style paths, raw system IDs (SENT, SPAM, TRASH) and exact user label names,
+  // including custom labels containing slashes.
+  const system = Object.keys(SYSTEM).find((id) => id === folder || SYSTEM[id].path === folder);
+  if (system) return system;
+  const found = (await labels(api)).find((l) => isUserLabel(l) && l.name === folder);
   if (!found) throw new Error('Unknown Gmail label; use a folder path from mail__list_folders');
   return found.id;
 }
 
+/** Message labels as the IMAP backend reports them: \Inbox-style system names, user label names. */
+async function labelNames(api, ids = []) {
+  const user = ids.filter((id) => !/^[A-Z_]+$/.test(id));
+  const byId = user.length
+    ? new Map((await labels(api)).filter(isUserLabel).map((l) => [l.id, l.name]))
+    : new Map();
+  return ids.map((id) => SYSTEM[id]?.label ?? byId.get(id)).filter(Boolean);
+}
+
 export async function listFolders(api) {
+  const list = await labels(api);
+  const present = new Set(list.map((l) => l.id));
   return [
+    ...Object.entries(SYSTEM)
+      .filter(([id]) => present.has(id))
+      .map(([id, s]) => ({ path: s.path, special_use: s.special_use, label_id: id })),
     { path: ALL, special_use: '\\All' },
-    ...(await labels(api)).map((l) => ({
-      path: l.name,
-      label_id: l.id,
-      ...({
-        INBOX: { special_use: '\\Inbox' },
-        SENT: { special_use: '\\Sent' },
-        TRASH: { special_use: '\\Trash' },
-        SPAM: { special_use: '\\Junk' },
-        DRAFT: { special_use: '\\Drafts' },
-        STARRED: { special_use: '\\Flagged' },
-      }[l.id] || {}),
-    })),
+    ...list.filter(isUserLabel).map((l) => ({ path: l.name, label_id: l.id })),
   ];
 }
 
@@ -175,7 +200,7 @@ export async function metadata(api, id, folder) {
     ...(parsed.cc ? { cc: parsed.cc.text } : {}),
     subject: parsed.subject || '(no subject)',
     unread: m.labelIds?.includes('UNREAD') || false,
-    labels: m.labelIds || [],
+    labels: await labelNames(api, m.labelIds),
     thread_id: m.threadId,
     message_id: parsed.messageId || null,
   };
@@ -349,9 +374,9 @@ export async function getThread(api, { folder, uid, maxChars = 8000 }) {
       m.id === id ? parsed : (await parseMessage(api, m.id, ALL, { checkFolder: false })).parsed;
     // Thread siblings may live in spam/trash. Return a real label path usable for subsequent reads.
     const location = m.labelIds?.includes('TRASH')
-      ? 'TRASH'
+      ? SYSTEM.TRASH.path
       : m.labelIds?.includes('SPAM')
-        ? 'SPAM'
+        ? SYSTEM.SPAM.path
         : ALL;
     messages.push(fullMessage(content, location, taggedId(m.id), maxChars));
   }

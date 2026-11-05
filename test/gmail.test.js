@@ -139,6 +139,72 @@ test('list/search returns headers, exact label paths and tagged IDs without fetc
   assert.match(request.params.q, /is:unread/);
 });
 
+test('Gmail API folders and labels use the IMAP backend names; pseudo-labels are hidden', async () => {
+  const system = [
+    'INBOX',
+    'SENT',
+    'DRAFT',
+    'SPAM',
+    'TRASH',
+    'STARRED',
+    'IMPORTANT',
+    'UNREAD',
+    'CHAT',
+    'YELLOW_STAR',
+    'CATEGORY_PROMOTIONS',
+  ].map((id) => ({ id, name: id, type: 'system' }));
+  const labels = [...system, { id: 'Label_7', name: '2024 Taxes', type: 'user' }];
+  const m = { ...head, labelIds: ['INBOX', 'UNREAD', 'CATEGORY_PROMOTIONS', 'Label_7', 'SENT'] };
+  const base = fakeApi({ messages: [m] });
+  const api = {
+    calls: base.calls,
+    async get(resource, params) {
+      if (resource !== 'labels') return base.get(resource, params);
+      base.calls.push({ resource });
+      return { labels };
+    },
+  };
+
+  assert.deepEqual(
+    (await gmail.listFolders(api)).map((f) => f.path),
+    [
+      'INBOX',
+      '[Gmail]/Sent Mail',
+      '[Gmail]/Drafts',
+      '[Gmail]/Starred',
+      '[Gmail]/Important',
+      '[Gmail]/Spam',
+      '[Gmail]/Trash',
+      '[Gmail]/All Mail',
+      '2024 Taxes',
+    ],
+  );
+
+  // IMAP-style paths and raw system IDs both select the same label.
+  const lastList = () => api.calls.filter((c) => c.resource === 'messages').at(-1).params;
+  for (const folder of ['[Gmail]/Sent Mail', 'SENT']) {
+    await gmail.listMessages(api, { folder });
+    assert.equal(lastList().labelIds, 'SENT');
+  }
+  await gmail.listMessages(api, { folder: '2024 Taxes' });
+  assert.equal(lastList().labelIds, 'Label_7');
+  for (const hidden of ['UNREAD', 'CATEGORY_PROMOTIONS', 'CHAT'])
+    await assert.rejects(gmail.listMessages(api, { folder: hidden }), /Unknown Gmail label/);
+
+  const listed = await gmail.listMessages(api, { folder: 'INBOX' });
+  assert.deepEqual(listed.messages[0].labels, ['\\Inbox', '2024 Taxes', '\\Sent']);
+  assert.equal(listed.messages[0].unread, true);
+  // One labels request per client (operation), not one per message.
+  assert.equal(api.calls.filter((c) => c.resource === 'labels').length, 1);
+
+  const trashed = { ...head, id: 'b', labelIds: ['TRASH'], internalDate: '2' };
+  const thread = await gmail.getThread(fakeApi({ messages: [head, trashed] }), {
+    folder: 'INBOX',
+    uid: 'gmail:abc123',
+  });
+  assert.equal(thread.messages.find((x) => x.uid === 'gmail:b').folder, '[Gmail]/Trash');
+});
+
 test('full message and attachment indexes share the IMAP MIME parser and attachment policy', async () => {
   const api = fakeApi();
   const result = await gmail.getMessage(api, { folder: 'INBOX', uid: 'gmail:abc123', maxChars: 5 });
