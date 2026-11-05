@@ -209,6 +209,7 @@ test('Gmail native thread reads newest 25 siblings and emits usable message refe
   assert.match(thread.note, /30 messages/);
   assert.ok(thread.messages.every((m) => typeof m.uid === 'string'));
   assert.ok(api.calls.some((c) => c.resource === 'threads/def456'));
+  assert.equal(api.calls.find((c) => c.resource === 'threads/def456').params.format, 'metadata');
   assert.equal(thread.messages[0].uid, 'gmail:6');
 });
 

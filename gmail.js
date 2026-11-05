@@ -309,7 +309,12 @@ export async function getThread(api, { folder, uid, maxChars = 8000 }) {
   const id = messageId(uid);
   const { parsed, head } = await parseMessage(api, id, folder);
   if (!HEX.test(head.threadId)) throw new Error('Missing Gmail thread id');
-  const thread = await api.get(`threads/${head.threadId}`, { format: 'minimal' }, 4 * 1024 * 1024);
+  // Metadata retains internalDate for selecting the newest siblings without downloading bodies.
+  const thread = await api.get(
+    `threads/${head.threadId}`,
+    { format: 'metadata', metadataHeaders: 'Date' },
+    4 * 1024 * 1024,
+  );
   const items = thread.messages || [];
   const recent = [...items]
     .sort((a, b) => Number(a.internalDate || 0) - Number(b.internalDate || 0))
