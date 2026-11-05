@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mail": {
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/multi-mail-mcp/index.js"],
+      "env": {
+        "MAIL_ACCOUNTS": "acme",
+        "MAIL_SAVE_ROOT": "/absolute/path/to/Acme Holdings LLC/00 Inbox"
+      }
+    }
+  }
+}

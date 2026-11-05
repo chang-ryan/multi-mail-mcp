@@ -1,0 +1,24 @@
+{
+  "name": "multi-mail-mcp",
+  "version": "1.0.0",
+  "description": "Read-only, multi-account MCP server for Proton Mail and Gmail.",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "imapflow": "2.8.0",
+    "mailparser": "3.12.4",
+    "zod": "4.6.7"
+  },
+  "bin": {
+    "multi-mail-mcp": "index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chang-ryan/multi-mail-mcp.git"
+  }
+}
