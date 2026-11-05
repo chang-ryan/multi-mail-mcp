@@ -72,7 +72,14 @@ function loadRegistry() {
   try {
     raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
   } catch (err) {
-    throw new Error(`${CONFIG_PATH} is not valid JSON: ${err.message}`);
+    // Parser errors can quote file contents, including an accidentally pasted password.
+    throw new Error(`${CONFIG_PATH} is not valid JSON`);
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw).some((k) => k !== 'accounts')
+      || !raw.accounts || typeof raw.accounts !== 'object' || Array.isArray(raw.accounts)
+      || !Object.keys(raw.accounts).length) {
+    throw new Error('Registry must contain only a non-empty "accounts" object');
   }
   const accounts = Object.create(null);
   for (const [id, a] of Object.entries(raw?.accounts || {})) {

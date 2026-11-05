@@ -20,5 +20,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chang-ryan/multi-mail-mcp.git"
+  },
+  "scripts": {
+    "test": "node --test"
   }
 }

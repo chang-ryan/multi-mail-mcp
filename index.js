@@ -7,6 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { isCalendarDate, publicError } from './security.js';
 
 import { init, allowedAccounts, resolveAccount, getPassword, saveRoot } from './config.js';
 import {
@@ -15,13 +16,13 @@ import {
 
 // A stray rejection from a dropped socket must not kill the server; log the message only,
 // never a stack or object dump that could carry message content.
-process.on('unhandledRejection', (err) => console.error('multi-mail-mcp: unhandled', err?.message || err));
+process.on('unhandledRejection', () => console.error('multi-mail-mcp: unhandled operation failure'));
 
 // Fail at startup on a bad registry, allowlist or save root rather than on the first call.
 try {
   init();
 } catch (err) {
-  console.error(`multi-mail-mcp: ${err.message}`);
+  console.error(`multi-mail-mcp: ${publicError(err)}`);
   process.exit(1);
 }
 
@@ -37,7 +38,7 @@ if (process.argv.includes('--check')) {
       console.log(`ok    ${a.id.padEnd(10)} ${a.address}  (${folders.length} folders)`);
     } catch (err) {
       failed++;
-      console.log(`FAIL  ${a.id.padEnd(10)} ${a.address}  ${err.message}`);
+      console.log(`FAIL  ${a.id.padEnd(10)} ${a.address}  ${publicError(err)}`);
     }
   }
   console.log(`save root: ${saveRoot() || '(off)'}`);
@@ -87,8 +88,8 @@ async function run(id, fn) {
     };
     return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
   } catch (err) {
-    const message = String(err?.message || err).slice(0, 500);
-    return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
+    const message = publicError(err);
+    return { content: [{ type: 'text', text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }) }], isError: true };
   }
 }
 
@@ -96,7 +97,7 @@ async function run(id, fn) {
 
 const text = (max = 500) => z.string().max(max).regex(/^[^\x00-\x1f\x7f]*$/, 'control characters are not allowed');
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD')
-  .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)), 'not a real date');
+  .refine(isCalendarDate, 'not a real date');
 
 const account = text(32).optional()
   .describe('Account id from mail__list_accounts. May be omitted when only one is available.');

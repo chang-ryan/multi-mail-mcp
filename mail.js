@@ -12,6 +12,8 @@ import { execFile } from 'child_process';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { getPassword, saveRoot } from './config.js';
+import { HIDDEN_CHARS } from './security.js';
+export { stripHidden } from './security.js';
 
 const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
 const MAX_SAVE_BYTES = 25 * 1024 * 1024;
@@ -27,7 +29,7 @@ const OPERATION_TIMEOUT_MS = 120000;
 const SAVE_EXTENSIONS = new Set([
   'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'tif', 'tiff',
   'txt', 'csv', 'tsv', 'md', 'rtf', 'eml', 'ics',
-  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key',
+  'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key',
 ]);
 
 /** imapflow methods that change server state. None is used; all are disabled per connection. */
@@ -111,9 +113,9 @@ function connectHint(account, err) {
  */
 async function openRO(client, folder) {
   const lock = await client.getMailboxLock(folder, { readOnly: true });
-  if (client.mailbox?.readOnly === false) {
+  if (client.mailbox?.readOnly !== true) {
     lock.release();
-    throw new Error(`Server opened "${folder}" read-write despite EXAMINE; refusing`);
+    throw new Error(`Server opened "${folder}" without confirmed read-only mode despite EXAMINE; refusing`);
   }
   return lock;
 }
@@ -382,10 +384,6 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
   });
 }
 
-// Bidi overrides/isolates (extension spoofing: "invoice‮fdp.exe"), zero-width and
-// Unicode tag characters, and C0/C1 controls.
-const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]|[\u{E0000}-\u{E007F}]/gu;
-
 /** A filename that cannot escape the directory, spoof its extension, or confuse a shell. */
 function safeName(name, index) {
   let base = path.basename(String(name || '').normalize('NFC').replace(/\\/g, '/'))
@@ -394,15 +392,11 @@ function safeName(name, index) {
     .replace(/^[.\-\s]+/, '')
     .trim();
   if (!base) base = `attachment-${index}`;
+  if (base.length <= 150) return base;
   const ext = path.extname(base);
-  return base.slice(0, 150 - ext.length) + (base.length > 150 ? ext : '');
-}
-
-/** Remove invisible/control characters a message could use to hide text from a human reviewer. */
-export function stripHidden(text) {
-  let n = 0;
-  const out = text.replace(HIDDEN_CHARS, (c) => (c === '\n' || c === '\t' || c === '\r' ? c : (n++, '')));
-  return { text: out, removed: n };
+  // An unusually long extension is not a useful file type; do not preserve it.
+  if (ext.length > 20) return `attachment-${index}`;
+  return base.slice(0, 150 - ext.length) + ext;
 }
 
 const extOf = (name) => path.extname(name).slice(1).toLowerCase();
@@ -450,7 +444,7 @@ function writeExclusive(dir, name, content) {
 function quarantine(file) {
   const flags = `0081;${Math.floor(Date.now() / 1000).toString(16)};multi-mail-mcp;`;
   return new Promise((resolve) => {
-    execFile('/usr/bin/xattr', ['-w', 'com.apple.quarantine', flags, file], { timeout: 5000 }, () => resolve());
+    execFile('/usr/bin/xattr', ['-w', 'com.apple.quarantine', flags, file], { timeout: 5000 }, (err) => resolve(!err));
   });
 }
 
@@ -488,8 +482,12 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
           refused.push({ index: a.index, filename: name, reason: `over ${MAX_SAVE_BYTES} bytes` });
         } else {
           const p = writeExclusive(dir, name, a.content);
-          await quarantine(p);
-          saved.push({ index: a.index, filename: name, content_type: a.contentType, size: a.size, path: p });
+          const quarantined = await quarantine(p);
+          saved.push({
+            index: a.index, filename: name, content_type: a.contentType, size: a.size, path: p,
+            quarantined,
+            ...(!quarantined ? { warning: 'macOS quarantine marking failed; the file was saved without it' } : {}),
+          });
         }
       }
       return { saved, ...(refused.length ? { refused } : {}) };
@@ -512,4 +510,4 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
 }
 
 /** Exposed for tests only. */
-export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites };
+export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites, openRO, quarantine };

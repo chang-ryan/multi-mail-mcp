@@ -25,7 +25,7 @@ bodies fetched with `BODY.PEEK`, so reading leaves no trace.
   account id).
 - **Opt-in attachment saving.** Only inside `MAIL_SAVE_ROOT` (symlinks resolved per level), documents
   and images only (no executables, archives, HTML or macro formats), 25 MB cap, sanitized names,
-  never overwrites, files marked with the macOS quarantine flag.
+  never overwrites, attempts to mark files with the macOS quarantine flag and reports failures.
 - **Defense in depth.** Mutating IMAP methods are disabled on every connection; a mailbox the server
   opens read-write is refused; inputs reject control characters; messages over 40 MB are not
   fetched; hidden Unicode (tag characters, bidi overrides, zero-width) is stripped from output and
@@ -106,3 +106,16 @@ Use an absolute `node` path: harnesses do not load nvm.
 ## License
 
 MIT. See `LICENSE`.
+
+## Security checks
+
+Run `npm test` for offline regression tests. They use temporary registries and a local MCP
+process; no mailbox connections or Keychain password lookups are needed.
+
+Attachment saving filters by filename extension, not file contents. Legacy `.doc`, `.xls`
+and `.ppt` files are refused because they can carry macros. An allowed extension does not
+prove that a file is safe. Each saved-file result reports `quarantined`; a failed macOS
+quarantine marking is returned with a warning.
+
+Save-folder checks reject existing symlink escapes. They do not provide protection against
+another local process concurrently replacing directory components during a save.
