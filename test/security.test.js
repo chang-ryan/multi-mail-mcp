@@ -158,6 +158,10 @@ test('MCP validates inputs and enforces account scoping without contacting mailb
     assert.equal(response.isError, true);
     assert.ok(!JSON.stringify(response).includes('Keychain'));
   }
+  const disabledSave = await client.callTool({ name: 'mail__get_attachments',
+    arguments: { account: 'first', folder: 'INBOX', uid: 1, save: true } });
+  assert.equal(disabledSave.isError, true);
+  assert.match(JSON.parse(disabledSave.content[0].text).error, /Saving is off/);
   const denied = await client.callTool({ name: 'mail__list_folders', arguments: { account: 'second' } });
   assert.equal(denied.isError, true);
   const payload = JSON.parse(denied.content[0].text);

@@ -2,3 +2,6 @@ node_modules/
 .env
 *.log
 bridge.json
+
+# Personal registries belong outside this repository.
+/accounts.json

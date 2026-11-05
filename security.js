@@ -21,3 +21,13 @@ export function publicError(error) {
   const message = typeof error?.message === 'string' ? error.message : 'Operation failed';
   return stripHidden(message).text.slice(0, 500);
 }
+
+/** Bound the result returned to the assistant, including headers and attachment metadata. */
+export function serializeResult(payload) {
+  const text = JSON.stringify(payload, null, 2);
+  // Includes room for the base64 encoding of the 2 MB inline attachment allowance.
+  if (Buffer.byteLength(text, 'utf8') > 3 * 1024 * 1024) {
+    throw new Error('Result exceeds 3 MB; reduce limit, max_chars or attachment indexes');
+  }
+  return text;
+}

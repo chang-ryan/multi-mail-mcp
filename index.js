@@ -7,7 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { isCalendarDate, publicError } from './security.js';
+import { isCalendarDate, publicError, serializeResult } from './security.js';
 
 import { init, allowedAccounts, resolveAccount, getPassword, saveRoot } from './config.js';
 import {
@@ -86,7 +86,7 @@ async function run(id, fn) {
       ...(counter.n ? { _hidden_characters_removed: counter.n } : {}),
       ...data,
     };
-    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+    return { content: [{ type: 'text', text: serializeResult(payload) }] };
   } catch (err) {
     const message = publicError(err);
     return { content: [{ type: 'text', text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }) }], isError: true };

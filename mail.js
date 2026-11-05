@@ -13,6 +13,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { getPassword, saveRoot } from './config.js';
 import { HIDDEN_CHARS } from './security.js';
+import { withOperationSlot, logoutBounded } from './runtime.js';
 export { stripHidden } from './security.js';
 
 const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
@@ -37,6 +38,7 @@ const MUTATING_METHODS = [
   'append', 'messageFlagsSet', 'messageFlagsAdd', 'messageFlagsRemove', 'setFlagColor',
   'messageDelete', 'messageCopy', 'messageMove',
   'mailboxCreate', 'mailboxRename', 'mailboxDelete', 'mailboxSubscribe', 'mailboxUnsubscribe',
+  'mailboxClose', // IMAP CLOSE can implicitly expunge messages flagged Deleted
 ];
 
 // --- Connection ---------------------------------------------------------------
@@ -46,6 +48,17 @@ const MUTATING_METHODS = [
  * it would throw before reaching the wire.
  */
 function disableWrites(client) {
+  if (typeof client.mailboxOpen === 'function') {
+    const open = client.mailboxOpen.bind(client);
+    Object.defineProperty(client, 'mailboxOpen', {
+      value: (folder, options) => {
+        if (options?.readOnly !== true) throw new Error('read-only server: writable mailboxOpen is disabled');
+        return open(folder, options);
+      },
+      writable: false,
+      configurable: false,
+    });
+  }
   for (const name of MUTATING_METHODS) {
     Object.defineProperty(client, name, {
       value: () => { throw new Error(`read-only server: ${name} is disabled`); },
@@ -55,25 +68,39 @@ function disableWrites(client) {
   }
 }
 
-async function withClient(account, fn) {
+function createReadOnlyClient(account, password) {
   const client = new ImapFlow({
     host: account.host,
     port: account.port,
     secure: account.secure,
     ...(account.doSTARTTLS === false ? { doSTARTTLS: false } : {}),
     ...(account.tls ? { tls: account.tls } : {}),
-    auth: { user: account.user, pass: await getPassword(account) },
+    auth: { user: account.user, pass: password },
     logger: false,
     emitLogs: false,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 60000,
     disableAutoIdle: true,
+    disableCompression: true,
+    // Enforce limits in the wire parser, before a literal can be allocated or MIME-parsed.
+    maxLiteralSize: MAX_MESSAGE_BYTES + 1,
+    maxResponseSize: MAX_MESSAGE_BYTES + 1024 * 1024,
+    maxLineLength: 1024 * 1024,
+    maxResponseTokens: 50000,
   });
   disableWrites(client);
   // imapflow emits 'error' for socket faults after connect; without a listener node would crash.
   client.on('error', () => {});
+  return client;
+}
 
+async function withClient(account, fn) {
+  return withOperationSlot(() => withClientConnection(account, fn));
+}
+
+async function withClientConnection(account, fn) {
+  const client = createReadOnlyClient(account, await getPassword(account));
   try {
     await client.connect();
   } catch (err) {
@@ -92,7 +119,7 @@ async function withClient(account, fn) {
     return await Promise.race([fn(client), deadline]);
   } finally {
     clearTimeout(timer);
-    await client.logout().catch(() => client.close());
+    await logoutBounded(client);
   }
 }
 
@@ -185,11 +212,17 @@ async function parseOne(client, uid) {
   // Check size first, so a hostile multi-hundred-MB message is never pulled into memory.
   const head = await client.fetchOne(id, { uid: true, size: true }, { uid: true });
   if (!head) throw new Error(`No message with uid ${uid} in this folder`);
+  if (!Number.isSafeInteger(head.size) || head.size < 0) {
+    throw new Error('Server did not provide a valid message size');
+  }
   if (head.size > MAX_MESSAGE_BYTES) {
     throw new Error(`Message is ${head.size} bytes, over the ${MAX_MESSAGE_BYTES}-byte limit`);
   }
-  const msg = await client.fetchOne(id, { uid: true, source: true, flags: true }, { uid: true });
+  const msg = await client.fetchOne(id, { uid: true, source: { start: 0, maxLength: MAX_MESSAGE_BYTES + 1 }, flags: true }, { uid: true });
   if (!msg?.source) throw new Error(`No message with uid ${uid} in this folder`);
+  if (msg.source.length > MAX_MESSAGE_BYTES) {
+    throw new Error('Downloaded message exceeds the 40 MB limit');
+  }
   return { parsed: await simpleParser(msg.source, PARSER_OPTIONS), flags: msg.flags };
 }
 
@@ -266,6 +299,8 @@ export async function search(account, criteria, limit = 40) {
         ? [await allMailPath(client)]
         : (await selectableFolders(client)).map((b) => b.path);
     }
+
+    if (targets.length > 100) throw new Error('Over 100 folders; select folders explicitly');
 
     const hits = [];
     const skipped = [];
@@ -355,12 +390,12 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
           seed.messageId,
           seed.inReplyTo,
           ...[].concat(seed.references || []),
-        ].filter((r) => typeof r === 'string' && r.length < 1000 && !/[\r\n\0]/.test(r));
+        ].filter((r) => typeof r === 'string' && r.length < 1000 && !/[\x00-\x1f\x7f]/.test(r));
         // References is sender-controlled; cap it so one message cannot trigger thousands of searches.
         for (const id of [...new Set(refs)].slice(-50)) {
           for (const u of await client.search({ header: { 'message-id': id } }, { uid: true }) || []) uids.add(u);
         }
-        if (seed.messageId) {
+        if (typeof seed.messageId === 'string' && seed.messageId.length < 1000 && !/[\x00-\x1f\x7f]/.test(seed.messageId)) {
           for (const u of await client.search({ header: { references: seed.messageId } }, { uid: true }) || []) uids.add(u);
         }
       }
@@ -453,6 +488,8 @@ function quarantine(file) {
  * and only paths come back. Otherwise content returns as base64, capped in size.
  */
 export async function getAttachments(account, { folder, uid, indexes, save, subdir }) {
+  // Refuse disabled saves before looking up a password or downloading any message.
+  if (save && !saveRoot()) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
   return withClient(account, async (client) => {
     const lock = await openRO(client, folder);
     let parsed;
@@ -510,4 +547,4 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
 }
 
 /** Exposed for tests only. */
-export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites, openRO, quarantine };
+export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites, openRO, quarantine, parseOne, createReadOnlyClient };

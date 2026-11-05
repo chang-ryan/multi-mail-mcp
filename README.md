@@ -119,3 +119,27 @@ quarantine marking is returned with a warning.
 
 Save-folder checks reject existing symlink escapes. They do not provide protection against
 another local process concurrently replacing directory components during a save.
+
+
+The server allows at most two concurrent mailbox operations per process. Extra calls return
+"busy" instead of queuing. IMAP responses have explicit literal, line, response-byte and token
+limits; message source fetches request at most 40 MB plus one byte and reject oversized results.
+MCP result payloads are limited to 3 MB. Mailbox reads retain their two-minute operation deadline,
+and logout cleanup is limited to five seconds. These are resource bounds, not a sandbox for MIME
+parsing or a guarantee against parser bugs.
+
+An account allowlist applies only to this server process. It is not isolation from an assistant
+that also has shell access as your macOS user, can modify launch configuration, or can read other
+mail connectors. Start separate processes with explicit account ids for narrower access. A `*`
+scope includes future accounts added to the registry too. Attachment saving should be enabled
+only for sessions that need it. Saves refused by configuration fail before any message download.
+
+The untrusted-content label and Unicode scrubbing reduce ambiguity; they cannot guarantee that
+an assistant ignores malicious instructions in readable email. Reading mail through this server
+also sends the returned content to the assistant provider. Keep approval controls on any other
+tools that can send, publish, upload, or execute actions.
+
+The connection guard also rejects writable `mailboxOpen` calls and disables `mailboxClose`
+(IMAP CLOSE can expunge deleted messages). Mailbox access still verifies the server's read-only
+confirmation after EXAMINE. These guards protect the supported operations and accidental future
+calls to those methods; they do not sandbox arbitrary JavaScript running in the same process.
