@@ -18,50 +18,85 @@ const CONFIG_PATH = process.env.MAIL_MCP_CONFIG
 
 /**
  * Hosts are fixed per backend type. accounts.json cannot point a password at an arbitrary
- * server: Proton goes to the loopback Bridge, Gmail goes to Google over TLS.
+ * server: Proton goes to the loopback Bridge, Gmail goes to Google over verified TLS.
  */
 const BACKENDS = {
-  proton: (a) => ({
+  proton: (a, id) => ({
     host: '127.0.0.1',
-    port: Number(a.port || 1143),
+    port: parsePort(a.port ?? 1143, id),
     secure: false,
-    // Bridge on loopback, cleartext. Bridge offers
-    // STARTTLS with a self-signed cert; upgrading would mean disabling verification, which is
-    // no safer than staying on the loopback interface.
+    // Bridge on loopback, cleartext. Bridge offers STARTTLS with a self-signed cert;
+    // upgrading would mean disabling verification, which is no safer than loopback.
     doSTARTTLS: false,
   }),
-  gmail: () => ({ host: 'imap.gmail.com', port: 993, secure: true }),
+  gmail: () => ({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2', servername: 'imap.gmail.com' },
+  }),
 };
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const USER_RE = /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/;
+const ACCOUNT_KEYS = new Set(['type', 'user', 'label', 'port']);
+const CONTROL_RE = /[\x00-\x1f\x7f]/;
+
+function parsePort(v, id) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`Account "${id}": bad port ${v}`);
+  return n;
+}
+
+/**
+ * The registry decides where a password is sent (the Proton port, at least), so refuse one
+ * that someone other than this user could have edited.
+ */
+function checkRegistryFile(file) {
+  const st = fs.statSync(file);
+  if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+    throw new Error(`Refusing ${file}: not owned by the current user`);
+  }
+  if (st.mode & 0o022) {
+    throw new Error(`Refusing ${file}: writable by group or others (chmod 600 or 644)`);
+  }
+}
 
 function loadRegistry() {
   if (!fs.existsSync(CONFIG_PATH)) {
     throw new Error(`No account registry at ${CONFIG_PATH}. See README, "Setup".`);
   }
+  checkRegistryFile(CONFIG_PATH);
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
   } catch (err) {
     throw new Error(`${CONFIG_PATH} is not valid JSON: ${err.message}`);
   }
-  const accounts = {};
-  for (const [id, a] of Object.entries(raw.accounts || {})) {
+  const accounts = Object.create(null);
+  for (const [id, a] of Object.entries(raw?.accounts || {})) {
     if (!ID_RE.test(id)) throw new Error(`Bad account id "${id}" in ${CONFIG_PATH}`);
-    if (!BACKENDS[a.type]) throw new Error(`Account "${id}": type must be "proton" or "gmail"`);
-    if (!a.user) throw new Error(`Account "${id}": missing "user"`);
-    if ('password' in a || 'pass' in a) {
-      throw new Error(`Account "${id}": passwords do not belong in ${CONFIG_PATH}; use the Keychain`);
+    if (!a || typeof a !== 'object') throw new Error(`Account "${id}": must be an object`);
+    for (const k of Object.keys(a)) {
+      if (/^pass(word)?$/i.test(k) || /secret|token/i.test(k)) {
+        throw new Error(`Account "${id}": secrets do not belong in ${CONFIG_PATH}; use the Keychain`);
+      }
+      if (!ACCOUNT_KEYS.has(k)) throw new Error(`Account "${id}": unknown key "${k}"`);
     }
-    accounts[id] = { id, type: a.type, user: a.user, label: a.label || id, ...BACKENDS[a.type](a) };
+    if (!Object.hasOwn(BACKENDS, a.type)) throw new Error(`Account "${id}": type must be "proton" or "gmail"`);
+    if (typeof a.user !== 'string' || !USER_RE.test(a.user)) throw new Error(`Account "${id}": "user" must be an email address`);
+    if (a.label !== undefined && (typeof a.label !== 'string' || CONTROL_RE.test(a.label))) {
+      throw new Error(`Account "${id}": bad label`);
+    }
+    accounts[id] = Object.freeze({ id, type: a.type, user: a.user, label: a.label || id, ...BACKENDS[a.type](a, id) });
   }
   return accounts;
 }
 
 /**
  * MAIL_ACCOUNTS is required. "*" opens everything; otherwise a comma list of ids.
- * An unset variable is an error rather than "all", so forgetting it in a harness config
- * fails closed.
+ * An unset variable is an error rather than "all", so forgetting it fails closed.
  */
 function loadAllowlist(registry) {
   const spec = (process.env.MAIL_ACCOUNTS || '').trim();
@@ -69,19 +104,43 @@ function loadAllowlist(registry) {
     throw new Error('MAIL_ACCOUNTS is not set. Set it to a comma list of account ids, or "*" for all.');
   }
   if (spec === '*') return Object.keys(registry);
-  const ids = spec.split(',').map((s) => s.trim()).filter(Boolean);
-  const unknown = ids.filter((id) => !registry[id]);
+  const ids = [...new Set(spec.split(',').map((s) => s.trim()).filter(Boolean))];
+  const unknown = ids.filter((id) => !Object.hasOwn(registry, id));
   if (unknown.length) throw new Error(`MAIL_ACCOUNTS names unknown account(s): ${unknown.join(', ')}`);
+  if (!ids.length) throw new Error('MAIL_ACCOUNTS lists no accounts');
   return ids;
+}
+
+/**
+ * MAIL_SAVE_ROOT unset means saving is off. When set it must be an existing directory;
+ * it is resolved through symlinks once, here, so later containment checks compare real paths.
+ */
+function loadSaveRoot() {
+  const root = (process.env.MAIL_SAVE_ROOT || '').trim();
+  if (!root) return null;
+  if (!path.isAbsolute(root)) throw new Error('MAIL_SAVE_ROOT must be an absolute path');
+  let real;
+  try {
+    real = fs.realpathSync(root);
+  } catch {
+    throw new Error(`MAIL_SAVE_ROOT does not exist: ${root}`);
+  }
+  if (!fs.statSync(real).isDirectory()) throw new Error(`MAIL_SAVE_ROOT is not a directory: ${root}`);
+  return real;
 }
 
 let _state = null;
 function state() {
   if (!_state) {
     const registry = loadRegistry();
-    _state = { registry, allowed: loadAllowlist(registry) };
+    _state = Object.freeze({ registry, allowed: loadAllowlist(registry), saveRoot: loadSaveRoot() });
   }
   return _state;
+}
+
+/** Validate everything at startup, so misconfiguration fails before the first tool call. */
+export function init() {
+  state();
 }
 
 /** The accounts this process may open, without credentials. */
@@ -105,36 +164,34 @@ export function resolveAccount(id) {
   }
   if (!allowed.includes(id)) {
     // Do not reveal whether the id exists elsewhere in the registry.
-    throw new Error(`Account "${id}" is not available here. Allowed: ${allowed.join(', ')}`);
+    throw new Error(`Account "${String(id).slice(0, 40)}" is not available here. Allowed: ${allowed.join(', ')}`);
   }
   return registry[id];
 }
 
-/** Read the password for an account from the login Keychain. Never logged. */
+/** Read the password for an account from the login Keychain. Never logged, never cached. */
 export function getPassword(account) {
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/bin/security',
       ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', account.id, '-w'],
-      { timeout: 10000 },
+      { timeout: 10000, maxBuffer: 4096, env: { PATH: '/usr/bin:/bin' } },
       (err, stdout) => {
-        if (err) {
+        const pass = err ? '' : stdout.replace(/\n$/, '');
+        if (!pass) {
           reject(new Error(
             `No Keychain item for account "${account.id}" (service "${KEYCHAIN_SERVICE}"). ` +
             'See README, "Setup".',
           ));
           return;
         }
-        resolve(stdout.replace(/\n$/, ''));
+        resolve(pass);
       },
     );
   });
 }
 
-/**
- * Where saved attachments may go. MAIL_SAVE_ROOT unset means saving is off.
- */
+/** Real path of the save root, or null when saving is off. */
 export function saveRoot() {
-  const root = (process.env.MAIL_SAVE_ROOT || '').trim();
-  return root ? path.resolve(root) : null;
+  return state().saveRoot;
 }

@@ -8,14 +8,50 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { getPassword, saveRoot } from './config.js';
 
-const MAX_INLINE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_SAVE_BYTES = 25 * 1024 * 1024;
+const MAX_SAVE_COUNT = 20;
+const MAX_MESSAGE_BYTES = 40 * 1024 * 1024; // larger raw messages are not downloaded or parsed
 const MAX_THREAD_MESSAGES = 25;
+const OPERATION_TIMEOUT_MS = 120000;
+
+/**
+ * Attachment types that may be written to disk. Executables, scripts, installers, disk
+ * images, archives, macro-enabled Office formats and HTML (which can script) are refused.
+ */
+const SAVE_EXTENSIONS = new Set([
+  'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'tif', 'tiff',
+  'txt', 'csv', 'tsv', 'md', 'rtf', 'eml', 'ics',
+  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key',
+]);
+
+/** imapflow methods that change server state. None is used; all are disabled per connection. */
+const MUTATING_METHODS = [
+  'append', 'messageFlagsSet', 'messageFlagsAdd', 'messageFlagsRemove', 'setFlagColor',
+  'messageDelete', 'messageCopy', 'messageMove',
+  'mailboxCreate', 'mailboxRename', 'mailboxDelete', 'mailboxSubscribe', 'mailboxUnsubscribe',
+];
 
 // --- Connection ---------------------------------------------------------------
+
+/**
+ * Belt and braces for read-only: even if a future edit called a mutating imapflow method,
+ * it would throw before reaching the wire.
+ */
+function disableWrites(client) {
+  for (const name of MUTATING_METHODS) {
+    Object.defineProperty(client, name, {
+      value: () => { throw new Error(`read-only server: ${name} is disabled`); },
+      writable: false,
+      configurable: false,
+    });
+  }
+}
 
 async function withClient(account, fn) {
   const client = new ImapFlow({
@@ -23,27 +59,44 @@ async function withClient(account, fn) {
     port: account.port,
     secure: account.secure,
     ...(account.doSTARTTLS === false ? { doSTARTTLS: false } : {}),
+    ...(account.tls ? { tls: account.tls } : {}),
     auth: { user: account.user, pass: await getPassword(account) },
     logger: false,
+    emitLogs: false,
     connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 60000,
+    disableAutoIdle: true,
   });
+  disableWrites(client);
   // imapflow emits 'error' for socket faults after connect; without a listener node would crash.
   client.on('error', () => {});
 
   try {
     await client.connect();
   } catch (err) {
+    client.close();
     throw new Error(connectHint(account, err));
   }
+
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      client.close();
+      reject(new Error(`[${account.id}] operation timed out after ${OPERATION_TIMEOUT_MS / 1000}s`));
+    }, OPERATION_TIMEOUT_MS);
+  });
   try {
-    return await fn(client);
+    return await Promise.race([fn(client), deadline]);
   } finally {
+    clearTimeout(timer);
     await client.logout().catch(() => client.close());
   }
 }
 
 function connectHint(account, err) {
-  const base = `[${account.id}] IMAP login failed: ${err.responseText || err.message}.`;
+  const reason = String(err.responseText || err.message || 'unknown error').slice(0, 200);
+  const base = `[${account.id}] IMAP login failed: ${reason}.`;
   if (account.type === 'proton') {
     return `${base} Is Proton Mail Bridge running, and is ${account.user} signed in to it? ` +
       'The password is the Bridge-generated one, not the Proton account password.';
@@ -52,9 +105,17 @@ function connectHint(account, err) {
     'App passwords). Workspace accounts also need IMAP enabled by the admin.';
 }
 
-/** The single place a mailbox is opened. readOnly is a literal. */
+/**
+ * The single place a mailbox is opened. readOnly is a literal (IMAP EXAMINE). If the server
+ * answers that the mailbox is READ-WRITE anyway, refuse to use it.
+ */
 async function openRO(client, folder) {
-  return client.getMailboxLock(folder, { readOnly: true });
+  const lock = await client.getMailboxLock(folder, { readOnly: true });
+  if (client.mailbox?.readOnly === false) {
+    lock.release();
+    throw new Error(`Server opened "${folder}" read-write despite EXAMINE; refusing`);
+  }
+  return lock;
 }
 
 // --- Helpers -------------------------------------------------------------------
@@ -111,10 +172,23 @@ function clip(text, max) {
     : { body: text, truncated: false };
 }
 
+const PARSER_OPTIONS = {
+  maxHtmlLengthToParse: 2 * 1024 * 1024, // html-to-text on hostile HTML is the slow path
+  skipImageLinks: true,
+  keepCidLinks: false,
+};
+
 async function parseOne(client, uid) {
-  const msg = await client.fetchOne(String(uid), { uid: true, source: true, flags: true }, { uid: true });
-  if (!msg || !msg.source) throw new Error(`No message with uid ${uid} in this folder`);
-  return { parsed: await simpleParser(msg.source), flags: msg.flags };
+  const id = String(uid);
+  // Check size first, so a hostile multi-hundred-MB message is never pulled into memory.
+  const head = await client.fetchOne(id, { uid: true, size: true }, { uid: true });
+  if (!head) throw new Error(`No message with uid ${uid} in this folder`);
+  if (head.size > MAX_MESSAGE_BYTES) {
+    throw new Error(`Message is ${head.size} bytes, over the ${MAX_MESSAGE_BYTES}-byte limit`);
+  }
+  const msg = await client.fetchOne(id, { uid: true, source: true, flags: true }, { uid: true });
+  if (!msg?.source) throw new Error(`No message with uid ${uid} in this folder`);
+  return { parsed: await simpleParser(msg.source, PARSER_OPTIONS), flags: msg.flags };
 }
 
 function fullMessage(parsed, folder, uid, maxChars) {
@@ -130,7 +204,7 @@ function fullMessage(parsed, folder, uid, maxChars) {
     in_reply_to: parsed.inReplyTo || null,
     attachments: (parsed.attachments || []).map((a, i) => ({
       index: i,
-      filename: a.filename || `attachment-${i}`,
+      filename: safeName(a.filename, i),
       content_type: a.contentType,
       size: a.size,
     })),
@@ -279,8 +353,9 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
           seed.messageId,
           seed.inReplyTo,
           ...[].concat(seed.references || []),
-        ].filter(Boolean);
-        for (const id of new Set(refs)) {
+        ].filter((r) => typeof r === 'string' && r.length < 1000 && !/[\r\n\0]/.test(r));
+        // References is sender-controlled; cap it so one message cannot trigger thousands of searches.
+        for (const id of [...new Set(refs)].slice(-50)) {
           for (const u of await client.search({ header: { 'message-id': id } }, { uid: true }) || []) uids.add(u);
         }
         if (seed.messageId) {
@@ -307,18 +382,76 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
   });
 }
 
-/** Strip anything that could escape the target directory or confuse a shell. */
-function safeName(name) {
-  const base = path.basename(String(name || 'attachment')).replace(/[\x00-\x1f/\\:*?"<>|]/g, '_').replace(/^\.+/, '_');
-  return base.slice(0, 180) || 'attachment';
+// Bidi overrides/isolates (extension spoofing: "invoice‮fdp.exe"), zero-width and
+// Unicode tag characters, and C0/C1 controls.
+const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]|[\u{E0000}-\u{E007F}]/gu;
+
+/** A filename that cannot escape the directory, spoof its extension, or confuse a shell. */
+function safeName(name, index) {
+  let base = path.basename(String(name || '').normalize('NFC').replace(/\\/g, '/'))
+    .replace(HIDDEN_CHARS, '')
+    .replace(/[/:*?"<>|]/g, '_')
+    .replace(/^[.\-\s]+/, '')
+    .trim();
+  if (!base) base = `attachment-${index}`;
+  const ext = path.extname(base);
+  return base.slice(0, 150 - ext.length) + (base.length > 150 ? ext : '');
 }
 
-function uniquePath(dir, name) {
+/** Remove invisible/control characters a message could use to hide text from a human reviewer. */
+export function stripHidden(text) {
+  let n = 0;
+  const out = text.replace(HIDDEN_CHARS, (c) => (c === '\n' || c === '\t' || c === '\r' ? c : (n++, '')));
+  return { text: out, removed: n };
+}
+
+const extOf = (name) => path.extname(name).slice(1).toLowerCase();
+
+/**
+ * Resolve the target directory through symlinks and confirm it is still inside the save root,
+ * so a symlink planted in the save folder cannot redirect writes elsewhere.
+ */
+function resolveSaveDir(root, subdir) {
+  if (subdir && (path.isAbsolute(subdir) || /[\0\r\n]/.test(subdir))) throw new Error('subdir must be a relative path');
+  const dir = subdir ? path.resolve(root, subdir) : root;
+  const inside = (p) => p === root || p.startsWith(root + path.sep);
+  if (!inside(dir)) throw new Error('subdir must stay inside the save root');
+  // Walk one level at a time, resolving each existing component through symlinks before
+  // creating anything beneath it, so nothing is ever created outside the root.
+  let cur = root;
+  for (const seg of path.relative(root, dir).split(path.sep).filter(Boolean)) {
+    const next = path.join(cur, seg);
+    if (!fs.existsSync(next)) fs.mkdirSync(next, { mode: 0o700 });
+    const real = fs.realpathSync(next);
+    if (!inside(real)) throw new Error('subdir resolves outside the save root');
+    if (!fs.statSync(real).isDirectory()) throw new Error('subdir is not a directory');
+    cur = real;
+  }
+  return cur;
+}
+
+/** Write without following or replacing anything that exists (O_CREAT|O_EXCL). */
+function writeExclusive(dir, name, content) {
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
-  let candidate = path.join(dir, name);
-  for (let i = 2; fs.existsSync(candidate); i++) candidate = path.join(dir, `${stem} (${i})${ext}`);
-  return candidate;
+  for (let i = 1; i < 1000; i++) {
+    const p = path.join(dir, i === 1 ? name : `${stem} (${i})${ext}`);
+    try {
+      fs.writeFileSync(p, content, { flag: 'wx', mode: 0o600 });
+      return p;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`Could not find a free filename for ${name}`);
+}
+
+/** Mark a saved file as downloaded from the internet, as browsers do, so Gatekeeper treats it so. */
+function quarantine(file) {
+  const flags = `0081;${Math.floor(Date.now() / 1000).toString(16)};multi-mail-mcp;`;
+  return new Promise((resolve) => {
+    execFile('/usr/bin/xattr', ['-w', 'com.apple.quarantine', flags, file], { timeout: 5000 }, () => resolve());
+  });
 }
 
 /**
@@ -342,17 +475,24 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
     if (save) {
       const root = saveRoot();
       if (!root) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
-      const dir = subdir ? path.resolve(root, subdir) : root;
-      if (dir !== root && !dir.startsWith(root + path.sep)) throw new Error('subdir must stay inside the save root');
-      if (!fs.existsSync(root)) throw new Error(`Save root does not exist: ${root}`);
-      fs.mkdirSync(dir, { recursive: true });
-      return {
-        saved: atts.map((a) => {
-          const p = uniquePath(dir, safeName(a.filename || `attachment-${a.index}`));
-          fs.writeFileSync(p, a.content, { flag: 'wx', mode: 0o644 });
-          return { index: a.index, filename: a.filename, content_type: a.contentType, size: a.size, path: p };
-        }),
-      };
+      if (atts.length > MAX_SAVE_COUNT) throw new Error(`Over ${MAX_SAVE_COUNT} attachments; pick indexes`);
+      const dir = resolveSaveDir(root, subdir);
+      const saved = [];
+      const refused = [];
+      for (const a of atts) {
+        const name = safeName(a.filename, a.index);
+        const ext = extOf(name);
+        if (!SAVE_EXTENSIONS.has(ext)) {
+          refused.push({ index: a.index, filename: name, reason: `.${ext || '(none)'} is not a saveable type` });
+        } else if (a.size > MAX_SAVE_BYTES) {
+          refused.push({ index: a.index, filename: name, reason: `over ${MAX_SAVE_BYTES} bytes` });
+        } else {
+          const p = writeExclusive(dir, name, a.content);
+          await quarantine(p);
+          saved.push({ index: a.index, filename: name, content_type: a.contentType, size: a.size, path: p });
+        }
+      }
+      return { saved, ...(refused.length ? { refused } : {}) };
     }
 
     const total = atts.reduce((n, a) => n + a.size, 0);
@@ -362,7 +502,7 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
     return {
       attachments: atts.map((a) => ({
         index: a.index,
-        filename: a.filename,
+        filename: safeName(a.filename, a.index),
         content_type: a.contentType,
         size: a.size,
         content_base64: a.content.toString('base64'),
@@ -370,3 +510,6 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
     };
   });
 }
+
+/** Exposed for tests only. */
+export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites };

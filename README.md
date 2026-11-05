@@ -23,7 +23,14 @@ bodies fetched with `BODY.PEEK`, so reading leaves no trace.
   `imap.gmail.com:993` over TLS.
 - **No secrets in files.** Passwords come from the macOS Keychain (service `multi-mail-mcp`, account =
   account id).
-- **Opt-in attachment saving.** Only inside `MAIL_SAVE_ROOT`, sanitized names, never overwrites.
+- **Opt-in attachment saving.** Only inside `MAIL_SAVE_ROOT` (symlinks resolved per level), documents
+  and images only (no executables, archives, HTML or macro formats), 25 MB cap, sanitized names,
+  never overwrites, files marked with the macOS quarantine flag.
+- **Defense in depth.** Mutating IMAP methods are disabled on every connection; a mailbox the server
+  opens read-write is refused; inputs reject control characters; messages over 40 MB are not
+  fetched; hidden Unicode (tag characters, bidi overrides, zero-width) is stripped from output and
+  every result is labelled untrusted; the registry is refused if group/other-writable or if it
+  carries a secret; `.npmrc` sets `ignore-scripts`.
 
 ## Setup
 
