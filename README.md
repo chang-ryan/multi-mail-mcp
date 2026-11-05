@@ -174,7 +174,15 @@ MAIL_ACCOUNTS=jaw MAIL_GMAIL_API_ACCOUNTS=jaw node index.js --check
 Use [examples/gmail-api.mcp.json](examples/gmail-api.mcp.json) to start an MCP process for both
 accounts, or put one id in both variables for a single-account session. The override must be an
 explicit comma-separated subset of allowed **Gmail** ids; it cannot widen `MAIL_ACCOUNTS`.
-Through the actual MCP tools:
+The optional live check calls the actual stdio MCP tools, reports only statuses, and never
+prints email content or saves attachments:
+
+```sh
+MAIL_ACCOUNTS=personal,jaw MAIL_GMAIL_API_ACCOUNTS=personal,jaw node scripts/verify-gmail-mcp.js
+```
+
+It reports any skipped reads or attachment checks if no suitable small message exists.
+For manual verification through the actual MCP tools:
 
 1. Call `mail__list_accounts`; confirm the expected address and `backend: "gmail-api"` for each.
 2. Call `mail__list_folders`, `mail__list_messages` in INBOX, then `mail__search` (e.g. query
