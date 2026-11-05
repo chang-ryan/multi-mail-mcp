@@ -1,11 +1,16 @@
 // Bidi overrides/isolates (extension spoofing: "invoice‮fdp.exe"), zero-width and
 // Unicode tag characters, and C0/C1 controls.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Deliberately match control characters for output scrubbing.
 export const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]|[\u{E0000}-\u{E007F}]/gu;
 
 /** Remove invisible/control characters a message could use to hide text from a human reviewer. */
 export function stripHidden(text) {
   let n = 0;
-  const out = text.replace(HIDDEN_CHARS, (c) => (c === '\n' || c === '\t' || c === '\r' ? c : (n++, '')));
+  const out = text.replace(HIDDEN_CHARS, (c) => {
+    if (c === '\n' || c === '\t' || c === '\r') return c;
+    n++;
+    return '';
+  });
   return { text: out, removed: n };
 }
 

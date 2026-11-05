@@ -6,14 +6,15 @@
  * mark read, or send. Messages are addressed as (folder, uid); UIDs are stable per folder.
  */
 
-import fs from 'fs';
-import path from 'path';
-import { execFile } from 'child_process';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { getPassword, saveRoot } from './config.js';
+import { logoutBounded, withOperationSlot } from './runtime.js';
 import { HIDDEN_CHARS } from './security.js';
-import { withOperationSlot, logoutBounded } from './runtime.js';
+
 export { stripHidden } from './security.js';
 
 const MAX_INLINE_ATTACHMENT_BYTES = 2 * 1024 * 1024;
@@ -28,16 +29,48 @@ const OPERATION_TIMEOUT_MS = 120000;
  * images, archives, macro-enabled Office formats and HTML (which can script) are refused.
  */
 const SAVE_EXTENSIONS = new Set([
-  'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'tif', 'tiff',
-  'txt', 'csv', 'tsv', 'md', 'rtf', 'eml', 'ics',
-  'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key',
+  'pdf',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'heic',
+  'tif',
+  'tiff',
+  'txt',
+  'csv',
+  'tsv',
+  'md',
+  'rtf',
+  'eml',
+  'ics',
+  'docx',
+  'xlsx',
+  'pptx',
+  'odt',
+  'ods',
+  'odp',
+  'pages',
+  'numbers',
+  'key',
 ]);
 
 /** imapflow methods that change server state. None is used; all are disabled per connection. */
 const MUTATING_METHODS = [
-  'append', 'messageFlagsSet', 'messageFlagsAdd', 'messageFlagsRemove', 'setFlagColor',
-  'messageDelete', 'messageCopy', 'messageMove',
-  'mailboxCreate', 'mailboxRename', 'mailboxDelete', 'mailboxSubscribe', 'mailboxUnsubscribe',
+  'append',
+  'messageFlagsSet',
+  'messageFlagsAdd',
+  'messageFlagsRemove',
+  'setFlagColor',
+  'messageDelete',
+  'messageCopy',
+  'messageMove',
+  'mailboxCreate',
+  'mailboxRename',
+  'mailboxDelete',
+  'mailboxSubscribe',
+  'mailboxUnsubscribe',
   'mailboxClose', // IMAP CLOSE can implicitly expunge messages flagged Deleted
 ];
 
@@ -52,7 +85,8 @@ function disableWrites(client) {
     const open = client.mailboxOpen.bind(client);
     Object.defineProperty(client, 'mailboxOpen', {
       value: (folder, options) => {
-        if (options?.readOnly !== true) throw new Error('read-only server: writable mailboxOpen is disabled');
+        if (options?.readOnly !== true)
+          throw new Error('read-only server: writable mailboxOpen is disabled');
         return open(folder, options);
       },
       writable: false,
@@ -61,7 +95,9 @@ function disableWrites(client) {
   }
   for (const name of MUTATING_METHODS) {
     Object.defineProperty(client, name, {
-      value: () => { throw new Error(`read-only server: ${name} is disabled`); },
+      value: () => {
+        throw new Error(`read-only server: ${name} is disabled`);
+      },
       writable: false,
       configurable: false,
     });
@@ -112,7 +148,9 @@ async function withClientConnection(account, fn) {
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
       client.close();
-      reject(new Error(`[${account.id}] operation timed out after ${OPERATION_TIMEOUT_MS / 1000}s`));
+      reject(
+        new Error(`[${account.id}] operation timed out after ${OPERATION_TIMEOUT_MS / 1000}s`),
+      );
     }, OPERATION_TIMEOUT_MS);
   });
   try {
@@ -127,11 +165,15 @@ function connectHint(account, err) {
   const reason = String(err.responseText || err.message || 'unknown error').slice(0, 200);
   const base = `[${account.id}] IMAP login failed: ${reason}.`;
   if (account.type === 'proton') {
-    return `${base} Is Proton Mail Bridge running, and is ${account.user} signed in to it? ` +
-      'The password is the Bridge-generated one, not the Proton account password.';
+    return (
+      `${base} Is Proton Mail Bridge running, and is ${account.user} signed in to it? ` +
+      'The password is the Bridge-generated one, not the Proton account password.'
+    );
   }
-  return `${base} Gmail needs an app password (Google Account > Security > 2-Step Verification > ` +
-    'App passwords). Workspace accounts also need IMAP enabled by the admin.';
+  return (
+    `${base} Gmail needs an app password (Google Account > Security > 2-Step Verification > ` +
+    'App passwords). Workspace accounts also need IMAP enabled by the admin.'
+  );
 }
 
 /**
@@ -142,16 +184,17 @@ async function openRO(client, folder) {
   const lock = await client.getMailboxLock(folder, { readOnly: true });
   if (client.mailbox?.readOnly !== true) {
     lock.release();
-    throw new Error(`Server opened "${folder}" without confirmed read-only mode despite EXAMINE; refusing`);
+    throw new Error(
+      `Server opened "${folder}" without confirmed read-only mode despite EXAMINE; refusing`,
+    );
   }
   return lock;
 }
 
 // --- Helpers -------------------------------------------------------------------
 
-const addr = (list) => (list || [])
-  .map((a) => (a.name ? `${a.name} <${a.address}>` : a.address))
-  .join(', ');
+const addr = (list) =>
+  (list || []).map((a) => (a.name ? `${a.name} <${a.address}>` : a.address)).join(', ');
 
 function summary(msg, folder) {
   const e = msg.envelope || {};
@@ -186,8 +229,9 @@ async function selectableFolders(client) {
 
 async function allMailPath(client) {
   const boxes = await selectableFolders(client);
-  const all = boxes.find((b) => b.specialUse === '\\All')
-    || boxes.find((b) => /^(\[Gmail\]\/)?All Mail$/i.test(b.path));
+  const all =
+    boxes.find((b) => b.specialUse === '\\All') ||
+    boxes.find((b) => /^(\[Gmail\]\/)?All Mail$/i.test(b.path));
   if (!all) throw new Error('This account has no All Mail folder');
   return all.path;
 }
@@ -218,7 +262,11 @@ async function parseOne(client, uid) {
   if (head.size > MAX_MESSAGE_BYTES) {
     throw new Error(`Message is ${head.size} bytes, over the ${MAX_MESSAGE_BYTES}-byte limit`);
   }
-  const msg = await client.fetchOne(id, { uid: true, source: { start: 0, maxLength: MAX_MESSAGE_BYTES + 1 }, flags: true }, { uid: true });
+  const msg = await client.fetchOne(
+    id,
+    { uid: true, source: { start: 0, maxLength: MAX_MESSAGE_BYTES + 1 }, flags: true },
+    { uid: true },
+  );
   if (!msg?.source) throw new Error(`No message with uid ${uid} in this folder`);
   if (msg.source.length > MAX_MESSAGE_BYTES) {
     throw new Error('Downloaded message exceeds the 40 MB limit');
@@ -252,7 +300,10 @@ function fullMessage(parsed, folder, uid, maxChars) {
 export async function listFolders(account) {
   return withClient(account, async (client) => {
     const boxes = await selectableFolders(client);
-    return boxes.map((b) => ({ path: b.path, ...(b.specialUse ? { special_use: b.specialUse } : {}) }));
+    return boxes.map((b) => ({
+      path: b.path,
+      ...(b.specialUse ? { special_use: b.specialUse } : {}),
+    }));
   });
 }
 
@@ -260,7 +311,8 @@ export async function listMessages(account, { folder = 'INBOX', limit = 20, unre
   return withClient(account, async (client) => {
     const lock = await openRO(client, folder);
     try {
-      const uids = await client.search(unreadOnly ? { seen: false } : { all: true }, { uid: true }) || [];
+      const uids =
+        (await client.search(unreadOnly ? { seen: false } : { all: true }, { uid: true })) || [];
       const recent = uids.slice(-limit);
       const msgs = await fetchSummaries(client, account, recent, folder);
       return { folder, total_matching: uids.length, messages: msgs.sort(byDateDesc) };
@@ -279,7 +331,8 @@ export async function search(account, criteria, limit = 40) {
   const { query, text, from, to, subject, body, since, before, unread, folders } = criteria;
   const q = {};
   if (query) {
-    if (account.type !== 'gmail') throw new Error('"query" (Gmail search syntax) only works on Gmail accounts');
+    if (account.type !== 'gmail')
+      throw new Error('"query" (Gmail search syntax) only works on Gmail accounts');
     q.gmraw = query;
   }
   if (text) q.text = text;
@@ -295,9 +348,10 @@ export async function search(account, criteria, limit = 40) {
   return withClient(account, async (client) => {
     let targets = folders?.length ? folders : null;
     if (!targets) {
-      targets = account.type === 'gmail'
-        ? [await allMailPath(client)]
-        : (await selectableFolders(client)).map((b) => b.path);
+      targets =
+        account.type === 'gmail'
+          ? [await allMailPath(client)]
+          : (await selectableFolders(client)).map((b) => b.path);
     }
 
     if (targets.length > 100) throw new Error('Over 100 folders; select folders explicitly');
@@ -309,9 +363,9 @@ export async function search(account, criteria, limit = 40) {
       let lock;
       try {
         lock = await openRO(client, folder);
-        const uids = await client.search(q, { uid: true }) || [];
+        const uids = (await client.search(q, { uid: true })) || [];
         matched += uids.length;
-        hits.push(...await fetchSummaries(client, account, uids.slice(-limit), folder));
+        hits.push(...(await fetchSummaries(client, account, uids.slice(-limit), folder)));
       } catch (err) {
         skipped.push({ folder, reason: err.responseText || err.message });
       } finally {
@@ -325,7 +379,10 @@ export async function search(account, criteria, limit = 40) {
     for (const m of hits) {
       const key = m.message_id || `${m.from}|${m.date}|${m.subject}`;
       const prev = byKey.get(key);
-      if (!prev) { byKey.set(key, { ...m, also_in: [] }); continue; }
+      if (!prev) {
+        byKey.set(key, { ...m, also_in: [] });
+        continue;
+      }
       if (/^All Mail$/i.test(prev.folder) && !/^All Mail$/i.test(m.folder)) {
         byKey.set(key, { ...m, also_in: [...prev.also_in, prev.folder] });
       } else if (!prev.also_in.includes(m.folder) && prev.folder !== m.folder) {
@@ -333,7 +390,10 @@ export async function search(account, criteria, limit = 40) {
       }
     }
     const unique = [...byKey.values()]
-      .map((m) => { if (!m.also_in.length) delete m.also_in; return m; })
+      .map((m) => {
+        if (!m.also_in.length) delete m.also_in;
+        return m;
+      })
       .sort(byDateDesc);
 
     return {
@@ -371,7 +431,11 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
       try {
         seed = (await parseOne(client, uid)).parsed;
         if (account.type === 'gmail') {
-          const m = await client.fetchOne(String(uid), { uid: true, threadId: true }, { uid: true });
+          const m = await client.fetchOne(
+            String(uid),
+            { uid: true, threadId: true },
+            { uid: true },
+          );
           threadId = m?.threadId || null;
         }
       } finally {
@@ -384,19 +448,29 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
     try {
       const uids = new Set();
       if (threadId) {
-        for (const u of await client.search({ threadId }, { uid: true }) || []) uids.add(u);
+        for (const u of (await client.search({ threadId }, { uid: true })) || []) uids.add(u);
       } else {
-        const refs = [
-          seed.messageId,
-          seed.inReplyTo,
-          ...[].concat(seed.references || []),
-        ].filter((r) => typeof r === 'string' && r.length < 1000 && !/[\x00-\x1f\x7f]/.test(r));
+        const refs = [seed.messageId, seed.inReplyTo, ...[].concat(seed.references || [])].filter(
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in sender-controlled message references.
+          (r) => typeof r === 'string' && r.length < 1000 && !/[\x00-\x1f\x7f]/.test(r),
+        );
         // References is sender-controlled; cap it so one message cannot trigger thousands of searches.
         for (const id of [...new Set(refs)].slice(-50)) {
-          for (const u of await client.search({ header: { 'message-id': id } }, { uid: true }) || []) uids.add(u);
+          for (const u of (await client.search({ header: { 'message-id': id } }, { uid: true })) ||
+            [])
+            uids.add(u);
         }
-        if (typeof seed.messageId === 'string' && seed.messageId.length < 1000 && !/[\x00-\x1f\x7f]/.test(seed.messageId)) {
-          for (const u of await client.search({ header: { references: seed.messageId } }, { uid: true }) || []) uids.add(u);
+        if (
+          typeof seed.messageId === 'string' &&
+          seed.messageId.length < 1000 &&
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters before an IMAP search.
+          !/[\x00-\x1f\x7f]/.test(seed.messageId)
+        ) {
+          for (const u of (await client.search(
+            { header: { references: seed.messageId } },
+            { uid: true },
+          )) || [])
+            uids.add(u);
         }
       }
 
@@ -410,7 +484,9 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
       messages.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
       return {
         count: messages.length,
-        ...(uids.size > MAX_THREAD_MESSAGES ? { note: `Thread has ${uids.size} messages; newest ${MAX_THREAD_MESSAGES} shown` } : {}),
+        ...(uids.size > MAX_THREAD_MESSAGES
+          ? { note: `Thread has ${uids.size} messages; newest ${MAX_THREAD_MESSAGES} shown` }
+          : {}),
         messages,
       };
     } finally {
@@ -421,7 +497,12 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
 
 /** A filename that cannot escape the directory, spoof its extension, or confuse a shell. */
 function safeName(name, index) {
-  let base = path.basename(String(name || '').normalize('NFC').replace(/\\/g, '/'))
+  let base = path
+    .basename(
+      String(name || '')
+        .normalize('NFC')
+        .replace(/\\/g, '/'),
+    )
     .replace(HIDDEN_CHARS, '')
     .replace(/[/:*?"<>|]/g, '_')
     .replace(/^[.\-\s]+/, '')
@@ -441,7 +522,8 @@ const extOf = (name) => path.extname(name).slice(1).toLowerCase();
  * so a symlink planted in the save folder cannot redirect writes elsewhere.
  */
 function resolveSaveDir(root, subdir) {
-  if (subdir && (path.isAbsolute(subdir) || /[\0\r\n]/.test(subdir))) throw new Error('subdir must be a relative path');
+  if (subdir && (path.isAbsolute(subdir) || /[\0\r\n]/.test(subdir)))
+    throw new Error('subdir must be a relative path');
   const dir = subdir ? path.resolve(root, subdir) : root;
   const inside = (p) => p === root || p.startsWith(root + path.sep);
   if (!inside(dir)) throw new Error('subdir must stay inside the save root');
@@ -479,7 +561,12 @@ function writeExclusive(dir, name, content) {
 function quarantine(file) {
   const flags = `0081;${Math.floor(Date.now() / 1000).toString(16)};multi-mail-mcp;`;
   return new Promise((resolve) => {
-    execFile('/usr/bin/xattr', ['-w', 'com.apple.quarantine', flags, file], { timeout: 5000 }, (err) => resolve(!err));
+    execFile(
+      '/usr/bin/xattr',
+      ['-w', 'com.apple.quarantine', flags, file],
+      { timeout: 5000 },
+      (err) => resolve(!err),
+    );
   });
 }
 
@@ -489,7 +576,8 @@ function quarantine(file) {
  */
 export async function getAttachments(account, { folder, uid, indexes, save, subdir }) {
   // Refuse disabled saves before looking up a password or downloading any message.
-  if (save && !saveRoot()) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
+  if (save && !saveRoot())
+    throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
   return withClient(account, async (client) => {
     const lock = await openRO(client, folder);
     let parsed;
@@ -506,7 +594,8 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
     if (save) {
       const root = saveRoot();
       if (!root) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
-      if (atts.length > MAX_SAVE_COUNT) throw new Error(`Over ${MAX_SAVE_COUNT} attachments; pick indexes`);
+      if (atts.length > MAX_SAVE_COUNT)
+        throw new Error(`Over ${MAX_SAVE_COUNT} attachments; pick indexes`);
       const dir = resolveSaveDir(root, subdir);
       const saved = [];
       const refused = [];
@@ -514,16 +603,26 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
         const name = safeName(a.filename, a.index);
         const ext = extOf(name);
         if (!SAVE_EXTENSIONS.has(ext)) {
-          refused.push({ index: a.index, filename: name, reason: `.${ext || '(none)'} is not a saveable type` });
+          refused.push({
+            index: a.index,
+            filename: name,
+            reason: `.${ext || '(none)'} is not a saveable type`,
+          });
         } else if (a.size > MAX_SAVE_BYTES) {
           refused.push({ index: a.index, filename: name, reason: `over ${MAX_SAVE_BYTES} bytes` });
         } else {
           const p = writeExclusive(dir, name, a.content);
           const quarantined = await quarantine(p);
           saved.push({
-            index: a.index, filename: name, content_type: a.contentType, size: a.size, path: p,
+            index: a.index,
+            filename: name,
+            content_type: a.contentType,
+            size: a.size,
+            path: p,
             quarantined,
-            ...(!quarantined ? { warning: 'macOS quarantine marking failed; the file was saved without it' } : {}),
+            ...(!quarantined
+              ? { warning: 'macOS quarantine marking failed; the file was saved without it' }
+              : {}),
           });
         }
       }
@@ -532,7 +631,9 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
 
     const total = atts.reduce((n, a) => n + a.size, 0);
     if (total > MAX_INLINE_ATTACHMENT_BYTES) {
-      throw new Error(`Attachments total ${total} bytes; over the inline cap. Pick indexes, or use save:true.`);
+      throw new Error(
+        `Attachments total ${total} bytes; over the inline cap. Pick indexes, or use save:true.`,
+      );
     }
     return {
       attachments: atts.map((a) => ({
@@ -547,4 +648,15 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
 }
 
 /** Exposed for tests only. */
-export const _internal = { safeName, resolveSaveDir, writeExclusive, extOf, SAVE_EXTENSIONS, disableWrites, openRO, quarantine, parseOne, createReadOnlyClient };
+export const _internal = {
+  safeName,
+  resolveSaveDir,
+  writeExclusive,
+  extOf,
+  SAVE_EXTENSIONS,
+  disableWrites,
+  openRO,
+  quarantine,
+  parseOne,
+  createReadOnlyClient,
+};

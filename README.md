@@ -39,10 +39,18 @@ bodies fetched with `BODY.PEEK`, so reading leaves no trace.
 ```json
 {
   "accounts": {
-    "acme":     { "type": "proton", "user": "ops@acme-holdings.example",  "label": "Acme Holdings LLC" },
-    "charity":  { "type": "proton", "user": "admin@example-charity.org",  "label": "Example Charity (non-profit)" },
-    "personal": { "type": "gmail",  "user": "you@gmail.example",          "label": "Personal" },
-    "widgets":  { "type": "gmail",  "user": "you@widgets-co.example",     "label": "Widgets Co (Google Workspace)" }
+    "acme": { "type": "proton", "user": "ops@acme-holdings.example", "label": "Acme Holdings LLC" },
+    "charity": {
+      "type": "proton",
+      "user": "admin@example-charity.org",
+      "label": "Example Charity (non-profit)"
+    },
+    "personal": { "type": "gmail", "user": "you@gmail.example", "label": "Personal" },
+    "widgets": {
+      "type": "gmail",
+      "user": "you@widgets-co.example",
+      "label": "Widgets Co (Google Workspace)"
+    }
   }
 }
 ```
@@ -109,6 +117,10 @@ MIT. See `LICENSE`.
 
 ## Security checks
 
+Run `npm ci` to install dependencies, then `npm run lint` for recommended Biome lint rules,
+`npm run format` to apply formatting, and `npm run check` to check lint, formatting, and
+import organization. CI runs `npm run check` and `npm test` on pushes to `main` and pull requests.
+
 Run `npm test` for offline regression tests. They use temporary registries and a local MCP
 process; no mailbox connections or Keychain password lookups are needed.
 
@@ -119,7 +131,6 @@ quarantine marking is returned with a warning.
 
 Save-folder checks reject existing symlink escapes. They do not provide protection against
 another local process concurrently replacing directory components during a save.
-
 
 The server allows at most two concurrent mailbox operations per process. Extra calls return
 "busy" instead of queuing. IMAP responses have explicit literal, line, response-byte and token

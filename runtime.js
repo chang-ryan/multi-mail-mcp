@@ -3,7 +3,8 @@ const MAX_ACTIVE_OPERATIONS = 2;
 let active = 0;
 
 export async function withOperationSlot(fn) {
-  if (active >= MAX_ACTIVE_OPERATIONS) throw new Error('Mail server busy; retry after an active operation finishes');
+  if (active >= MAX_ACTIVE_OPERATIONS)
+    throw new Error('Mail server busy; retry after an active operation finishes');
   active++;
   try {
     return await fn();
@@ -18,7 +19,9 @@ export async function logoutBounded(client, timeoutMs = 5000) {
   try {
     await Promise.race([
       Promise.resolve().then(() => client.logout()),
-      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
     ]);
   } catch {
     // Closing below is also the fallback when LOGOUT rejects.

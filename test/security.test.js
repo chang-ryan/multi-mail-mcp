@@ -1,36 +1,44 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { _internal } from '../mail.js';
-import { isCalendarDate, stripHidden, publicError } from '../security.js';
+import { isCalendarDate, publicError, stripHidden } from '../security.js';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
-const registry = { accounts: {
-  first: { type: 'gmail', user: 'first@example.test' },
-  second: { type: 'proton', user: 'second@example.test' },
-} };
+const registry = {
+  accounts: {
+    first: { type: 'gmail', user: 'first@example.test' },
+    second: { type: 'proton', user: 'second@example.test' },
+  },
+};
 function fixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multi-mail-test-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const config = path.join(dir, 'accounts.json');
   fs.writeFileSync(config, JSON.stringify(registry), { mode: 0o600 });
-  return { dir, config, env: { PATH: process.env.PATH, MAIL_MCP_CONFIG: config, MAIL_ACCOUNTS: 'first' } };
+  return {
+    dir,
+    config,
+    env: { PATH: process.env.PATH, MAIL_MCP_CONFIG: config, MAIL_ACCOUNTS: 'first' },
+  };
 }
 function startup(env) {
   return spawnSync(process.execPath, [path.join(repo, 'index.js')], {
-    env, encoding: 'utf8', timeout: 10000,
+    env,
+    encoding: 'utf8',
+    timeout: 10000,
   });
 }
 
 test('filenames retain allowed extensions at and beyond the length boundary', () => {
   for (const length of [145, 146, 147, 148, 149, 150, 151, 250]) {
-    const name = 'a'.repeat(length - 4) + '.pdf';
+    const name = `${'a'.repeat(length - 4)}.pdf`;
     const safe = _internal.safeName(name, 0);
     assert.equal(path.extname(safe), '.pdf');
     assert.ok(safe.length <= 150);
@@ -54,10 +62,18 @@ test('directory checks reject symlink escapes before creating outside folders', 
   const { dir } = fixture(t);
   const root = path.join(dir, 'root');
   const outside = path.join(dir, 'outside');
-  fs.mkdirSync(root); fs.mkdirSync(outside);
+  fs.mkdirSync(root);
+  fs.mkdirSync(outside);
   fs.symlinkSync(outside, path.join(root, 'escape'));
   fs.symlinkSync(path.join(outside, 'missing'), path.join(root, 'dangling'));
-  for (const subdir of ['escape', 'escape/deeper', 'escape/a/b', '../outside/deeper', outside, 'dangling/deeper']) {
+  for (const subdir of [
+    'escape',
+    'escape/deeper',
+    'escape/a/b',
+    '../outside/deeper',
+    outside,
+    'dangling/deeper',
+  ]) {
     assert.throws(() => _internal.resolveSaveDir(root, subdir));
   }
   assert.deepEqual(fs.readdirSync(outside), []);
@@ -80,14 +96,19 @@ test('read-only operations fail closed when the server omits confirmation', asyn
     let released = false;
     const client = {
       mailbox: { readOnly: mode },
-      async getMailboxLock(folder, options) {
+      async getMailboxLock(_folder, options) {
         assert.deepEqual(options, { readOnly: true });
-        return { release() { released = true; } };
+        return {
+          release() {
+            released = true;
+          },
+        };
       },
     };
     if (mode === true) {
       const lock = await _internal.openRO(client, 'INBOX');
-      assert.equal(released, false); lock.release();
+      assert.equal(released, false);
+      lock.release();
     } else {
       await assert.rejects(_internal.openRO(client, 'INBOX'), /refusing/);
     }
@@ -97,12 +118,21 @@ test('read-only operations fail closed when the server omits confirmation', asyn
   _internal.disableWrites(client);
   for (const name of Object.getOwnPropertyNames(client)) {
     assert.throws(() => client[name](), /read-only server/);
-    assert.throws(() => { client[name] = () => {}; }, TypeError);
+    assert.throws(() => {
+      client[name] = () => {};
+    }, TypeError);
   }
 });
 
 test('calendar dates reject normalization and validate leap years', () => {
-  for (const value of ['2026-02-29', '2026-02-30', '2026-04-31', '2026-13-01', '2026-00-01', 'no']) {
+  for (const value of [
+    '2026-02-29',
+    '2026-02-30',
+    '2026-04-31',
+    '2026-13-01',
+    '2026-00-01',
+    'no',
+  ]) {
     assert.equal(isCalendarDate(value), false, value);
   }
   for (const value of ['2024-02-29', '2026-02-28', '2026-12-31']) {
@@ -129,8 +159,13 @@ test('startup rejects writable, malformed and empty registries with a nonzero st
   assert.equal(result.status, 1);
   assert.match(result.stderr, /writable by group or others/);
   fs.chmodSync(config, 0o600);
-  for (const invalid of [{}, { accounts: {} }, { accounts: [] }, { ...registry, password: 'test-secret' },
-    { accounts: { first: { ...registry.accounts.first, app_password: 'test-secret' } } }]) {
+  for (const invalid of [
+    {},
+    { accounts: {} },
+    { accounts: [] },
+    { ...registry, password: 'test-secret' },
+    { accounts: { first: { ...registry.accounts.first, app_password: 'test-secret' } } },
+  ]) {
     fs.writeFileSync(config, JSON.stringify(invalid));
     result = startup(env);
     assert.equal(result.status, 1);
@@ -145,24 +180,36 @@ test('startup rejects writable, malformed and empty registries with a nonzero st
 
 test('MCP validates inputs and enforces account scoping without contacting mailboxes', async (t) => {
   const { env } = fixture(t);
-  const transport = new StdioClientTransport({ command: process.execPath,
-    args: [path.join(repo, 'index.js')], env, stderr: 'pipe' });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [path.join(repo, 'index.js')],
+    env,
+    stderr: 'pipe',
+  });
   const client = new Client({ name: 'offline-security-test', version: '1.0.0' });
   t.after(() => client.close());
   await client.connect(transport);
   const result = await client.callTool({ name: 'mail__list_accounts', arguments: {} });
   const accounts = JSON.parse(result.content[0].text).accounts;
-  assert.deepEqual(accounts.map((a) => a.id), ['first']);
+  assert.deepEqual(
+    accounts.map((a) => a.id),
+    ['first'],
+  );
   for (const args of [{ since: '2026-02-30' }, { from: 'x\r\ny' }, { limit: 201 }]) {
     const response = await client.callTool({ name: 'mail__search', arguments: args });
     assert.equal(response.isError, true);
     assert.ok(!JSON.stringify(response).includes('Keychain'));
   }
-  const disabledSave = await client.callTool({ name: 'mail__get_attachments',
-    arguments: { account: 'first', folder: 'INBOX', uid: 1, save: true } });
+  const disabledSave = await client.callTool({
+    name: 'mail__get_attachments',
+    arguments: { account: 'first', folder: 'INBOX', uid: 1, save: true },
+  });
   assert.equal(disabledSave.isError, true);
   assert.match(JSON.parse(disabledSave.content[0].text).error, /Saving is off/);
-  const denied = await client.callTool({ name: 'mail__list_folders', arguments: { account: 'second' } });
+  const denied = await client.callTool({
+    name: 'mail__list_folders',
+    arguments: { account: 'second' },
+  });
   assert.equal(denied.isError, true);
   const payload = JSON.parse(denied.content[0].text);
   assert.ok(payload._untrusted);

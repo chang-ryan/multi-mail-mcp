@@ -7,16 +7,23 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { isCalendarDate, publicError, serializeResult } from './security.js';
-
-import { init, allowedAccounts, resolveAccount, getPassword, saveRoot } from './config.js';
+import { allowedAccounts, getPassword, init, resolveAccount, saveRoot } from './config.js';
 import {
-  listFolders, listMessages, search, getMessage, getThread, getAttachments, stripHidden,
+  getAttachments,
+  getMessage,
+  getThread,
+  listFolders,
+  listMessages,
+  search,
+  stripHidden,
 } from './mail.js';
+import { isCalendarDate, publicError, serializeResult } from './security.js';
 
 // A stray rejection from a dropped socket must not kill the server; log the message only,
 // never a stack or object dump that could carry message content.
-process.on('unhandledRejection', () => console.error('multi-mail-mcp: unhandled operation failure'));
+process.on('unhandledRejection', () =>
+  console.error('multi-mail-mcp: unhandled operation failure'),
+);
 
 // Fail at startup on a bad registry, allowlist or save root rather than on the first call.
 try {
@@ -68,7 +75,8 @@ function scrub(value, counter) {
   if (Array.isArray(value)) return value.map((v) => scrub(v, counter));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = k === 'content_base64' ? v : scrub(v, counter);
+    for (const [k, v] of Object.entries(value))
+      out[k] = k === 'content_base64' ? v : scrub(v, counter);
     return out;
   }
   return value;
@@ -89,22 +97,48 @@ async function run(id, fn) {
     return { content: [{ type: 'text', text: serializeResult(payload) }] };
   } catch (err) {
     const message = publicError(err);
-    return { content: [{ type: 'text', text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }) }], isError: true };
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }) }],
+      isError: true,
+    };
   }
 }
 
 // --- Input schemas: bounded, no control characters --------------------------
 
-const text = (max = 500) => z.string().max(max).regex(/^[^\x00-\x1f\x7f]*$/, 'control characters are not allowed');
-const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD')
+const text = (max = 500) =>
+  z
+    .string()
+    .max(max)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in tool inputs.
+    .regex(/^[^\x00-\x1f\x7f]*$/, 'control characters are not allowed');
+const date = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD')
   .refine(isCalendarDate, 'not a real date');
 
-const account = text(32).optional()
+const account = text(32)
+  .optional()
   .describe('Account id from mail__list_accounts. May be omitted when only one is available.');
-const folder = text(500).min(1).describe('Folder the uid belongs to, exactly as returned by search/list');
-const uid = z.number().int().positive().max(2 ** 32 - 1).describe('Message uid, as returned by search/list');
-const limit = (dflt) => z.number().int().positive().max(200).optional().describe(`Max results, default ${dflt}`);
-const maxChars = (dflt) => z.number().int().positive().max(200000).optional().describe(`Body character cap, default ${dflt}`);
+const folder = text(500)
+  .min(1)
+  .describe('Folder the uid belongs to, exactly as returned by search/list');
+const uid = z
+  .number()
+  .int()
+  .positive()
+  .max(2 ** 32 - 1)
+  .describe('Message uid, as returned by search/list');
+const limit = (dflt) =>
+  z.number().int().positive().max(200).optional().describe(`Max results, default ${dflt}`);
+const maxChars = (dflt) =>
+  z
+    .number()
+    .int()
+    .positive()
+    .max(200000)
+    .optional()
+    .describe(`Body character cap, default ${dflt}`);
 
 // --- Tools — read only ------------------------------------------------------
 
@@ -113,18 +147,24 @@ server.tool(
   'List the mailboxes this session may read. Call first when unsure which account to use.',
   {},
   async () => ({
-    content: [{
-      type: 'text',
-      text: JSON.stringify({ accounts: allowedAccounts(), attachment_saving: saveRoot() ? 'on' : 'off' }, null, 2),
-    }],
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          { accounts: allowedAccounts(), attachment_saving: saveRoot() ? 'on' : 'off' },
+          null,
+          2,
+        ),
+      },
+    ],
   }),
 );
 
 server.tool(
   'mail__search',
   'Search one account. Returns headers only; pass folder+uid to mail__get_message for the body. ' +
-  'Gmail searches All Mail and accepts Gmail syntax in "query" (e.g. "from:irs.gov has:attachment ' +
-  'newer_than:1y"). Proton searches every folder and reports where each message is filed.',
+    'Gmail searches All Mail and accepts Gmail syntax in "query" (e.g. "from:irs.gov has:attachment ' +
+    'newer_than:1y"). Proton searches every folder and reports where each message is filed.',
   {
     account,
     query: text(1000).optional().describe('Gmail search syntax. Gmail accounts only'),
@@ -152,7 +192,9 @@ server.tool(
     limit: limit(20),
   },
   async ({ account: id, folder: f, unread_only, limit: n }) =>
-    run(id, (a) => listMessages(a, { folder: f || 'INBOX', limit: n || 20, unreadOnly: !!unread_only })),
+    run(id, (a) =>
+      listMessages(a, { folder: f || 'INBOX', limit: n || 20, unreadOnly: !!unread_only }),
+    ),
 );
 
 server.tool(
@@ -173,21 +215,24 @@ server.tool(
 
 server.tool(
   'mail__list_folders',
-  'List an account\'s folders (Gmail: labels).',
+  "List an account's folders (Gmail: labels).",
   { account },
   async ({ account: id }) => run(id, async (a) => ({ folders: await listFolders(a) })),
 );
 
 server.tool(
   'mail__get_attachments',
-  'Get a message\'s attachments. save:true writes documents and images into this session\'s save ' +
-  'folder (only when saving is on; never overwrites; executables, archives, HTML and macro-enabled ' +
-  'files are refused) and returns paths. Otherwise returns base64, capped at 2 MB total.',
+  "Get a message's attachments. save:true writes documents and images into this session's save " +
+    'folder (only when saving is on; never overwrites; executables, archives, HTML and macro-enabled ' +
+    'files are refused) and returns paths. Otherwise returns base64, capped at 2 MB total.',
   {
     account,
     folder,
     uid,
-    indexes: z.array(z.number().int().min(0).max(1000)).max(50).optional()
+    indexes: z
+      .array(z.number().int().min(0).max(1000))
+      .max(50)
+      .optional()
       .describe('Attachment indexes from mail__get_message; omit for all'),
     save: z.boolean().optional(),
     subdir: text(200).optional().describe('Relative subfolder inside the save folder, when saving'),
@@ -199,4 +244,8 @@ server.tool(
 // --- Start ------------------------------------------------------------------
 
 await server.connect(new StdioServerTransport());
-console.error(`multi-mail-mcp ready — accounts: ${allowedAccounts().map((a) => a.id).join(', ')}. Read only.`);
+console.error(
+  `multi-mail-mcp ready — accounts: ${allowedAccounts()
+    .map((a) => a.id)
+    .join(', ')}. Read only.`,
+);

@@ -1,8 +1,16 @@
 {
   "accounts": {
-    "acme":     { "type": "proton", "user": "ops@acme-holdings.example",  "label": "Acme Holdings LLC" },
-    "charity":  { "type": "proton", "user": "admin@example-charity.org",  "label": "Example Charity (non-profit)" },
-    "personal": { "type": "gmail",  "user": "you@gmail.example",          "label": "Personal" },
-    "widgets":  { "type": "gmail",  "user": "you@widgets-co.example",     "label": "Widgets Co (Google Workspace)" }
+    "acme": { "type": "proton", "user": "ops@acme-holdings.example", "label": "Acme Holdings LLC" },
+    "charity": {
+      "type": "proton",
+      "user": "admin@example-charity.org",
+      "label": "Example Charity (non-profit)"
+    },
+    "personal": { "type": "gmail", "user": "you@gmail.example", "label": "Personal" },
+    "widgets": {
+      "type": "gmail",
+      "user": "you@widgets-co.example",
+      "label": "Widgets Co (Google Workspace)"
+    }
   }
 }

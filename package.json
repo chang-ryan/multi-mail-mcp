@@ -22,6 +22,12 @@
     "url": "git+https://github.com/chang-ryan/multi-mail-mcp.git"
   },
   "scripts": {
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check .",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.5"
   }
 }
