@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * multi-mail-mcp — read-only, multi-account mail (Proton via Bridge, Gmail via IMAP) over MCP.
+ * multi-mail-mcp — read-only, multi-account mail (Proton via Bridge, Gmail via IMAP or API) over MCP.
  * MAIL_ACCOUNTS in the launching config sets which accounts this process may open.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { allowedAccounts, getPassword, init, resolveAccount, saveRoot } from './config.js';
 import {
   getAttachments,
   getMessage,
@@ -15,9 +14,11 @@ import {
   listFolders,
   listMessages,
   search,
-  stripHidden,
-} from './mail.js';
-import { isCalendarDate, publicError, serializeResult } from './security.js';
+} from './backend.js';
+
+import { allowedAccounts, init, resolveAccount, saveRoot } from './config.js';
+import { authorize, revoke } from './oauth.js';
+import { isCalendarDate, publicError, serializeResult, stripHidden } from './security.js';
 
 // A stray rejection from a dropped socket must not kill the server; log the message only,
 // never a stack or object dump that could carry message content.
@@ -33,6 +34,51 @@ try {
   process.exit(1);
 }
 
+// Browser consent is reachable only through an explicit CLI command, never MCP startup.
+const command = process.argv[2];
+if (command === 'auth' || command === 'revoke') {
+  try {
+    const id = process.argv[3];
+    if (!id || id.startsWith('-'))
+      throw new Error(
+        `Usage: node index.js ${command} ACCOUNT${command === 'auth' ? ' --client /path/to/client_secret.json [--no-open]' : ''}`,
+      );
+    const a = resolveAccount(id); // CLI commands obey exactly the same process allowlist.
+    if (command === 'auth') {
+      const args = process.argv.slice(4);
+      let clientFile = process.env.MAIL_GOOGLE_CLIENT_FILE;
+      let noOpen = false;
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--client' && args[i + 1] && !args[i + 1].startsWith('-'))
+          clientFile = args[++i];
+        else if (args[i] === '--no-open') noOpen = true;
+        else
+          throw new Error(
+            'Usage: node index.js auth ACCOUNT --client /path/to/client_secret.json [--no-open]',
+          );
+      }
+      if (!clientFile)
+        throw new Error(
+          'Specify --client /path/to/desktop_client_secret.json or MAIL_GOOGLE_CLIENT_FILE',
+        );
+      await authorize(a, clientFile, { noOpen });
+    } else {
+      if (process.argv.length !== 4) throw new Error('Usage: node index.js revoke ACCOUNT');
+      await revoke(a);
+    }
+    process.exit(0);
+  } catch (err) {
+    console.error(`multi-mail-mcp: ${publicError(err)}`);
+    process.exit(1);
+  }
+}
+if (command && command !== '--check') {
+  console.error(
+    'Usage: node index.js [--check | auth ACCOUNT --client FILE [--no-open] | revoke ACCOUNT]',
+  );
+  process.exit(1);
+}
+
 // --- `node index.js --check`: try every allowed account, print status, exit -------
 
 if (process.argv.includes('--check')) {
@@ -40,9 +86,10 @@ if (process.argv.includes('--check')) {
   for (const a of allowedAccounts()) {
     const acct = resolveAccount(a.id);
     try {
-      await getPassword(acct);
       const folders = await listFolders(acct);
-      console.log(`ok    ${a.id.padEnd(10)} ${a.address}  (${folders.length} folders)`);
+      console.log(
+        `ok    ${a.id.padEnd(10)} ${a.address}  (${acct.backend}; ${folders.length} folders)`,
+      );
     } catch (err) {
       failed++;
       console.log(`FAIL  ${a.id.padEnd(10)} ${a.address}  ${publicError(err)}`);
@@ -124,11 +171,17 @@ const folder = text(500)
   .min(1)
   .describe('Folder the uid belongs to, exactly as returned by search/list');
 const uid = z
-  .number()
-  .int()
-  .positive()
-  .max(2 ** 32 - 1)
-  .describe('Message uid, as returned by search/list');
+  .union([
+    z
+      .number()
+      .int()
+      .positive()
+      .max(2 ** 32 - 1),
+    z.string().regex(/^gmail:[a-f0-9]{1,32}$/),
+  ])
+  .describe(
+    'Opaque uid exactly as returned by search/list: numeric for IMAP, gmail:hex for Gmail API. Never convert or reuse across backends.',
+  );
 const limit = (dflt) =>
   z.number().int().positive().max(200).optional().describe(`Max results, default ${dflt}`);
 const maxChars = (dflt) =>
@@ -172,7 +225,11 @@ server.tool(
     from: text().optional().describe('Sender contains, e.g. "irs.gov"'),
     to: text().optional().describe('Recipient contains'),
     subject: text().optional().describe('Subject contains'),
-    body: text().optional().describe('Body contains'),
+    body: text()
+      .optional()
+      .describe(
+        'Body contains. Gmail API scans at most 200 candidates; results report incomplete scans',
+      ),
     since: date.optional().describe('On or after, YYYY-MM-DD'),
     before: date.optional().describe('Before, YYYY-MM-DD'),
     unread: z.boolean().optional().describe('Only unread messages'),

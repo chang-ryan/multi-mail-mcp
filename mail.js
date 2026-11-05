@@ -245,7 +245,7 @@ function clip(text, max) {
     : { body: text, truncated: false };
 }
 
-const PARSER_OPTIONS = {
+export const PARSER_OPTIONS = {
   maxHtmlLengthToParse: 2 * 1024 * 1024, // html-to-text on hostile HTML is the slow path
   skipImageLinks: true,
   keepCidLinks: false,
@@ -274,10 +274,10 @@ async function parseOne(client, uid) {
   return { parsed: await simpleParser(msg.source, PARSER_OPTIONS), flags: msg.flags };
 }
 
-function fullMessage(parsed, folder, uid, maxChars) {
+export function fullMessage(parsed, folder, uid, maxChars) {
   return {
     folder,
-    uid: Number(uid),
+    uid,
     date: parsed.date?.toISOString() || null,
     from: parsed.from?.text || '',
     to: parsed.to?.text || '',
@@ -587,64 +587,69 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
       lock.release();
     }
 
-    let atts = (parsed.attachments || []).map((a, i) => ({ ...a, index: i }));
-    if (indexes?.length) atts = atts.filter((a) => indexes.includes(a.index));
-    if (!atts.length) return { attachments: [] };
-
-    if (save) {
-      const root = saveRoot();
-      if (!root) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
-      if (atts.length > MAX_SAVE_COUNT)
-        throw new Error(`Over ${MAX_SAVE_COUNT} attachments; pick indexes`);
-      const dir = resolveSaveDir(root, subdir);
-      const saved = [];
-      const refused = [];
-      for (const a of atts) {
-        const name = safeName(a.filename, a.index);
-        const ext = extOf(name);
-        if (!SAVE_EXTENSIONS.has(ext)) {
-          refused.push({
-            index: a.index,
-            filename: name,
-            reason: `.${ext || '(none)'} is not a saveable type`,
-          });
-        } else if (a.size > MAX_SAVE_BYTES) {
-          refused.push({ index: a.index, filename: name, reason: `over ${MAX_SAVE_BYTES} bytes` });
-        } else {
-          const p = writeExclusive(dir, name, a.content);
-          const quarantined = await quarantine(p);
-          saved.push({
-            index: a.index,
-            filename: name,
-            content_type: a.contentType,
-            size: a.size,
-            path: p,
-            quarantined,
-            ...(!quarantined
-              ? { warning: 'macOS quarantine marking failed; the file was saved without it' }
-              : {}),
-          });
-        }
-      }
-      return { saved, ...(refused.length ? { refused } : {}) };
-    }
-
-    const total = atts.reduce((n, a) => n + a.size, 0);
-    if (total > MAX_INLINE_ATTACHMENT_BYTES) {
-      throw new Error(
-        `Attachments total ${total} bytes; over the inline cap. Pick indexes, or use save:true.`,
-      );
-    }
-    return {
-      attachments: atts.map((a) => ({
-        index: a.index,
-        filename: safeName(a.filename, a.index),
-        content_type: a.contentType,
-        size: a.size,
-        content_base64: a.content.toString('base64'),
-      })),
-    };
+    return attachmentResult(parsed, { indexes, save, subdir });
   });
+}
+
+/** Shared by the IMAP and Gmail API backends; all saving safeguards stay in one place. */
+export async function attachmentResult(parsed, { indexes, save, subdir }) {
+  let atts = (parsed.attachments || []).map((a, i) => ({ ...a, index: i }));
+  if (indexes?.length) atts = atts.filter((a) => indexes.includes(a.index));
+  if (!atts.length) return { attachments: [] };
+
+  if (save) {
+    const root = saveRoot();
+    if (!root) throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
+    if (atts.length > MAX_SAVE_COUNT)
+      throw new Error(`Over ${MAX_SAVE_COUNT} attachments; pick indexes`);
+    const dir = resolveSaveDir(root, subdir);
+    const saved = [];
+    const refused = [];
+    for (const a of atts) {
+      const name = safeName(a.filename, a.index);
+      const ext = extOf(name);
+      if (!SAVE_EXTENSIONS.has(ext)) {
+        refused.push({
+          index: a.index,
+          filename: name,
+          reason: `.${ext || '(none)'} is not a saveable type`,
+        });
+      } else if (a.size > MAX_SAVE_BYTES) {
+        refused.push({ index: a.index, filename: name, reason: `over ${MAX_SAVE_BYTES} bytes` });
+      } else {
+        const p = writeExclusive(dir, name, a.content);
+        const quarantined = await quarantine(p);
+        saved.push({
+          index: a.index,
+          filename: name,
+          content_type: a.contentType,
+          size: a.size,
+          path: p,
+          quarantined,
+          ...(!quarantined
+            ? { warning: 'macOS quarantine marking failed; the file was saved without it' }
+            : {}),
+        });
+      }
+    }
+    return { saved, ...(refused.length ? { refused } : {}) };
+  }
+
+  const total = atts.reduce((n, a) => n + a.size, 0);
+  if (total > MAX_INLINE_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachments total ${total} bytes; over the inline cap. Pick indexes, or use save:true.`,
+    );
+  }
+  return {
+    attachments: atts.map((a) => ({
+      index: a.index,
+      filename: safeName(a.filename, a.index),
+      content_type: a.contentType,
+      size: a.size,
+      content_base64: a.content.toString('base64'),
+    })),
+  };
 }
 
 /** Exposed for tests only. */

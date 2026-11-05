@@ -41,7 +41,7 @@ const BACKENDS = {
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in account addresses.
 const USER_RE = /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/;
-const ACCOUNT_KEYS = new Set(['type', 'user', 'label', 'port']);
+const ACCOUNT_KEYS = new Set(['type', 'user', 'label', 'port', 'backend']);
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in account labels.
 const CONTROL_RE = /[\x00-\x1f\x7f]/;
 
@@ -109,9 +109,16 @@ function loadRegistry() {
     if (a.label !== undefined && (typeof a.label !== 'string' || CONTROL_RE.test(a.label))) {
       throw new Error(`Account "${id}": bad label`);
     }
+    const backend = a.backend ?? 'imap';
+    if (!['imap', 'gmail-api'].includes(backend) || (a.type !== 'gmail' && backend !== 'imap')) {
+      throw new Error(
+        `Account "${id}": backend must be imap (any account) or gmail-api (Gmail only)`,
+      );
+    }
     accounts[id] = Object.freeze({
       id,
       type: a.type,
+      backend,
       user: a.user,
       label: a.label || id,
       ...BACKENDS[a.type](a, id),
@@ -170,11 +177,17 @@ let _state = null;
 function state() {
   if (!_state) {
     const registry = loadRegistry();
-    _state = Object.freeze({
-      registry,
-      allowed: loadAllowlist(registry),
-      saveRoot: loadSaveRoot(),
-    });
+    const allowed = loadAllowlist(registry);
+    // Explicit per-process trial/migration override; never expands MAIL_ACCOUNTS.
+    const trial = (process.env.MAIL_GMAIL_API_ACCOUNTS || '').trim();
+    const ids = trial ? [...new Set(trial.split(',').map((s) => s.trim()))] : [];
+    for (const id of ids) {
+      if (!allowed.includes(id) || registry[id]?.type !== 'gmail') {
+        throw new Error('MAIL_GMAIL_API_ACCOUNTS must name allowed Gmail accounts');
+      }
+      registry[id] = Object.freeze({ ...registry[id], backend: 'gmail-api' });
+    }
+    _state = Object.freeze({ registry, allowed, saveRoot: loadSaveRoot() });
   }
   return _state;
 }
@@ -188,8 +201,8 @@ export function init() {
 export function allowedAccounts() {
   const { registry, allowed } = state();
   return allowed.map((id) => {
-    const { label, type, user } = registry[id];
-    return { id, label, type, address: user };
+    const { label, type, user, backend } = registry[id];
+    return { id, label, type, backend, address: user };
   });
 }
 
