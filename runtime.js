@@ -2,6 +2,11 @@
 const MAX_ACTIVE_OPERATIONS = 2;
 let active = 0;
 
+/**
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
 export async function withOperationSlot(fn) {
   if (active >= MAX_ACTIVE_OPERATIONS)
     throw new Error('Mail server busy; retry after an active operation finishes');

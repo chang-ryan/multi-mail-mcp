@@ -479,3 +479,15 @@ test('Gmail request budgets count retries and reject more requests before creden
   assert.equal(credentials, 1);
   assert.equal(requests, 1);
 });
+
+test('repeated address header lines are joined, not reported as empty', async () => {
+  const { simpleParser } = await import('mailparser');
+  const { fullMessage } = await import('../mail.js');
+  const parsed = await simpleParser(
+    'From: a@example.test\r\nTo: b@example.test\r\nTo: c@example.test\r\nCc: d@example.test\r\nCc: e@example.test\r\nSubject: s\r\n\r\nhi',
+  );
+  const message = fullMessage(parsed, 'INBOX', 1, 100);
+  assert.equal(message.to, 'b@example.test, c@example.test');
+  assert.equal(message.cc, 'd@example.test, e@example.test');
+  assert.equal(message.from, 'a@example.test');
+});

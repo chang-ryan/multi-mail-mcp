@@ -2,7 +2,7 @@
 import { simpleParser } from 'mailparser';
 import { saveRoot } from './config.js';
 import { GMAIL_ROOT, googleJson } from './google-http.js';
-import { attachmentResult, fullMessage, PARSER_OPTIONS } from './mail.js';
+import { addressText, attachmentResult, fullMessage, PARSER_OPTIONS } from './mail.js';
 import { tokenManager } from './oauth.js';
 import { withOperationSlot } from './runtime.js';
 
@@ -10,6 +10,10 @@ const MAX_MESSAGE = 40 * 1024 * 1024;
 const MAX_RAW_JSON = Math.ceil((MAX_MESSAGE * 4) / 3) + 65536;
 const ALL = '[Gmail]/All Mail';
 const HEX = /^[a-f0-9]{1,32}$/;
+/**
+ * @param {unknown} id
+ * @returns {`gmail:${string}`}
+ */
 export const taggedId = (id) => {
   if (typeof id !== 'string' || !HEX.test(id)) throw new Error('Invalid Gmail API message id');
   return `gmail:${id}`;
@@ -25,6 +29,11 @@ export function messageId(uid) {
 
 // A second guard against accidental future mutations: only these GET resources are reachable.
 const READ_PATH = /^(?:profile|labels|messages|messages\/[a-f0-9]{1,32}|threads\/[a-f0-9]{1,32})$/;
+/**
+ * @param {import('./types.js').Account} account
+ * @param {{ tokens?: { get(account: any, signal?: AbortSignal): Promise<string>, invalidate(account: any): void }, fetchImpl?: typeof fetch, signal?: AbortSignal, maxOperationBytes?: number, maxRequests?: number }} [options]
+ * @returns {import('./types.js').GmailApi}
+ */
 export function createGmailClient(
   account,
   {
@@ -151,6 +160,9 @@ async function labelNames(api, ids = []) {
   return ids.map((id) => SYSTEM[id]?.label ?? byId.get(id)).filter(Boolean);
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ */
 export async function listFolders(api) {
   const list = await labels(api);
   const present = new Set(list.map((l) => l.id));
@@ -163,7 +175,7 @@ export async function listFolders(api) {
   ];
 }
 
-const dateDesc = (a, b) => new Date(b.date || 0) - new Date(a.date || 0);
+const dateDesc = (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
 function checkSize(message) {
   if (
     !Number.isSafeInteger(message.sizeEstimate) ||
@@ -195,9 +207,9 @@ export async function metadata(api, id, folder) {
       (Number.isFinite(Number(m.internalDate))
         ? new Date(Number(m.internalDate)).toISOString()
         : null),
-    from: parsed.from?.text || '',
-    to: parsed.to?.text || '',
-    ...(parsed.cc ? { cc: parsed.cc.text } : {}),
+    from: addressText(parsed.from),
+    to: addressText(parsed.to),
+    ...(parsed.cc ? { cc: addressText(parsed.cc) } : {}),
     subject: parsed.subject || '(no subject)',
     unread: m.labelIds?.includes('UNREAD') || false,
     labels: await labelNames(api, m.labelIds),
@@ -232,6 +244,10 @@ export async function parseMessage(api, id, folder, { checkFolder = true } = {})
   return { parsed: await simpleParser(source, PARSER_OPTIONS), head };
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ * @param {import('./types.js').ListOptions} options
+ */
 export async function listMessages(api, { folder = 'INBOX', limit = 20, unreadOnly = false }) {
   const label = await folderLabel(api, folder);
   const result = await api.get('messages', {
@@ -271,6 +287,11 @@ export function searchQuery(criteria) {
   return parts.join(' ');
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ * @param {import('./types.js').SearchCriteria} criteria
+ * @param {number} [limit]
+ */
 export async function search(api, criteria, limit = 40) {
   const query = searchQuery(criteria);
   const targets = criteria.folders?.length ? criteria.folders : [ALL];
@@ -349,11 +370,19 @@ export async function search(api, criteria, limit = 40) {
   };
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ * @param {import('./types.js').MessageRef & { maxChars?: number }} options
+ */
 export async function getMessage(api, { folder, uid, maxChars = 20000 }) {
   const { parsed, head } = await parseMessage(api, messageId(uid), folder);
   return { ...fullMessage(parsed, folder, uid, maxChars), thread_id: head.threadId };
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ * @param {import('./types.js').MessageRef & { maxChars?: number }} options
+ */
 export async function getThread(api, { folder, uid, maxChars = 8000 }) {
   const id = messageId(uid);
   const { parsed, head } = await parseMessage(api, id, folder);
@@ -381,7 +410,7 @@ export async function getThread(api, { folder, uid, maxChars = 8000 }) {
     messages.push(fullMessage(content, location, taggedId(m.id), maxChars));
   }
   if (!messages.length) messages.push(fullMessage(parsed, folder, uid, maxChars));
-  messages.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+  messages.sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
   return {
     count: messages.length,
     ...(items.length > 25 ? { note: `Thread has ${items.length} messages; newest 25 shown` } : {}),
@@ -389,6 +418,10 @@ export async function getThread(api, { folder, uid, maxChars = 8000 }) {
   };
 }
 
+/**
+ * @param {import('./types.js').GmailApi} api
+ * @param {import('./types.js').AttachmentOptions} options
+ */
 export async function getAttachments(api, { folder, uid, indexes, save, subdir }) {
   if (save && !saveRoot())
     throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');

@@ -242,6 +242,11 @@ export function createTokenManager({ read = keychainRead, fetchImpl = fetch } = 
 }
 export const tokenManager = createTokenManager();
 
+/**
+ * @param {import('./types.js').Account} account
+ * @param {{ client_id: string, client_secret?: string }} client
+ * @param {{ openBrowser?: (url: string) => Promise<void>, timeoutMs?: number, onReady?: (url: string) => void }} [options]
+ */
 export async function loopbackAuthorization(
   account,
   client,
@@ -316,9 +321,9 @@ export async function loopbackAuthorization(
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(0, '127.0.0.1', resolve);
+      server.listen(0, '127.0.0.1', () => resolve(undefined));
     });
-    expectedHost = `127.0.0.1:${server.address().port}`;
+    expectedHost = `127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (server.address()).port}`;
     const redirect_uri = `http://${expectedHost}/oauth/callback`;
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.search = new URLSearchParams({

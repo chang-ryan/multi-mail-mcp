@@ -131,10 +131,22 @@ function createReadOnlyClient(account, password) {
   return client;
 }
 
+/**
+ * @template T
+ * @param {import('./types.js').Account} account
+ * @param {(client: ImapFlow) => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
 async function withClient(account, fn) {
   return withOperationSlot(() => withClientConnection(account, fn));
 }
 
+/**
+ * @template T
+ * @param {import('./types.js').Account} account
+ * @param {(client: ImapFlow) => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
 async function withClientConnection(account, fn) {
   const client = createReadOnlyClient(account, await getPassword(account));
   try {
@@ -145,6 +157,7 @@ async function withClientConnection(account, fn) {
   }
 
   let timer;
+  /** @type {Promise<never>} */
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
       client.close();
@@ -236,7 +249,7 @@ async function allMailPath(client) {
   return all.path;
 }
 
-const byDateDesc = (a, b) => new Date(b.date || 0) - new Date(a.date || 0);
+const byDateDesc = (a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
 
 function clip(text, max) {
   if (!text) return { body: '', truncated: false };
@@ -274,14 +287,31 @@ async function parseOne(client, uid) {
   return { parsed: await simpleParser(msg.source, PARSER_OPTIONS), flags: msg.flags };
 }
 
+/**
+ * A parsed address header as text. mailparser returns an array when the header line repeats;
+ * reading `.text` off that array would silently report the field as empty.
+ * @param {import('mailparser').AddressObject | import('mailparser').AddressObject[] | undefined} value
+ */
+export function addressText(value) {
+  if (Array.isArray(value)) return value.map((a) => a.text).join(', ');
+  return value?.text || '';
+}
+
+/**
+ * @param {import('mailparser').ParsedMail} parsed
+ * @param {string} folder
+ * @param {import('./types.js').Uid} uid
+ * @param {number} maxChars
+ * @returns {import('./types.js').FullMessage}
+ */
 export function fullMessage(parsed, folder, uid, maxChars) {
   return {
     folder,
     uid,
     date: parsed.date?.toISOString() || null,
-    from: parsed.from?.text || '',
-    to: parsed.to?.text || '',
-    ...(parsed.cc ? { cc: parsed.cc.text } : {}),
+    from: addressText(parsed.from),
+    to: addressText(parsed.to),
+    ...(parsed.cc ? { cc: addressText(parsed.cc) } : {}),
     subject: parsed.subject || '(no subject)',
     message_id: parsed.messageId || null,
     in_reply_to: parsed.inReplyTo || null,
@@ -297,6 +327,9 @@ export function fullMessage(parsed, folder, uid, maxChars) {
 
 // --- Operations ---------------------------------------------------------------
 
+/**
+ * @param {import('./types.js').Account} account
+ */
 export async function listFolders(account) {
   return withClient(account, async (client) => {
     const boxes = await selectableFolders(client);
@@ -307,6 +340,10 @@ export async function listFolders(account) {
   });
 }
 
+/**
+ * @param {import('./types.js').Account} account
+ * @param {import('./types.js').ListOptions} options
+ */
 export async function listMessages(account, { folder = 'INBOX', limit = 20, unreadOnly = false }) {
   return withClient(account, async (client) => {
     const lock = await openRO(client, folder);
@@ -326,6 +363,10 @@ export async function listMessages(account, { folder = 'INBOX', limit = 20, unre
  * Search. Gmail searches All Mail once (labels are reported per message). Proton walks
  * every folder and collapses All Mail duplicates, so the result names the folder a
  * message is actually filed in.
+ *
+ * @param {import('./types.js').Account} account
+ * @param {import('./types.js').SearchCriteria} criteria
+ * @param {number} [limit]
  */
 export async function search(account, criteria, limit = 40) {
   const { query, text, from, to, subject, body, since, before, unread, folders } = criteria;
@@ -406,6 +447,10 @@ export async function search(account, criteria, limit = 40) {
   });
 }
 
+/**
+ * @param {import('./types.js').Account} account
+ * @param {import('./types.js').MessageRef & { maxChars?: number }} options
+ */
 export async function getMessage(account, { folder, uid, maxChars = 20000 }) {
   return withClient(account, async (client) => {
     const lock = await openRO(client, folder);
@@ -421,6 +466,9 @@ export async function getMessage(account, { folder, uid, maxChars = 20000 }) {
 /**
  * Whole thread. Gmail: X-GM-THRID in All Mail. Proton: Message-ID / References /
  * In-Reply-To chain, searched in All Mail.
+ *
+ * @param {import('./types.js').Account} account
+ * @param {import('./types.js').MessageRef & { maxChars?: number }} options
  */
 export async function getThread(account, { folder, uid, maxChars = 8000 }) {
   return withClient(account, async (client) => {
@@ -436,7 +484,7 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
             { uid: true, threadId: true },
             { uid: true },
           );
-          threadId = m?.threadId || null;
+          threadId = m === false ? null : m.threadId || null;
         }
       } finally {
         lock.release();
@@ -481,7 +529,7 @@ export async function getThread(account, { folder, uid, maxChars = 8000 }) {
         messages.push(fullMessage(parsed, allMail, u, maxChars));
       }
       if (!messages.length) messages.push(fullMessage(seed, folder, uid, maxChars));
-      messages.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+      messages.sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
       return {
         count: messages.length,
         ...(uids.size > MAX_THREAD_MESSAGES
@@ -573,6 +621,9 @@ function quarantine(file) {
 /**
  * Attachments. With save:true, files are written under MAIL_SAVE_ROOT (never overwriting)
  * and only paths come back. Otherwise content returns as base64, capped in size.
+ *
+ * @param {import('./types.js').Account} account
+ * @param {import('./types.js').AttachmentOptions} options
  */
 export async function getAttachments(account, { folder, uid, indexes, save, subdir }) {
   // Refuse disabled saves before looking up a password or downloading any message.
@@ -592,6 +643,11 @@ export async function getAttachments(account, { folder, uid, indexes, save, subd
 }
 
 /** Shared by the IMAP and Gmail API backends; all saving safeguards stay in one place. */
+/**
+ * @param {import('mailparser').ParsedMail} parsed
+ * @param {Omit<import('./types.js').AttachmentOptions, 'folder' | 'uid'>} options
+ * @returns {Promise<import('./types.js').AttachmentResult>}
+ */
 export async function attachmentResult(parsed, { indexes, save, subdir }) {
   let atts = (parsed.attachments || []).map((a, i) => ({ ...a, index: i }));
   if (indexes?.length) atts = atts.filter((a) => indexes.includes(a.index));

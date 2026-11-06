@@ -141,11 +141,16 @@ async function run(id, fn) {
       ...(counter.n ? { _hidden_characters_removed: counter.n } : {}),
       ...data,
     };
-    return { content: [{ type: 'text', text: serializeResult(payload) }] };
+    return { content: [{ type: /** @type {const} */ ('text'), text: serializeResult(payload) }] };
   } catch (err) {
     const message = publicError(err);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }) }],
+      content: [
+        {
+          type: /** @type {const} */ ('text'),
+          text: JSON.stringify({ _untrusted: UNTRUSTED, error: message }),
+        },
+      ],
       isError: true,
     };
   }
@@ -177,7 +182,8 @@ const uid = z
       .int()
       .positive()
       .max(2 ** 32 - 1),
-    z.string().regex(/^gmail:[a-f0-9]{1,32}$/),
+    // Validated as a pattern; typed as the Gmail API Uid form it guarantees.
+    /** @type {z.ZodType<`gmail:${string}`>} */ (z.string().regex(/^gmail:[a-f0-9]{1,32}$/)),
   ])
   .describe(
     'Opaque uid exactly as returned by search/list: numeric for IMAP, gmail:hex for Gmail API. Never convert or reuse across backends.',

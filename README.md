@@ -305,7 +305,13 @@ MIT. See `LICENSE`.
 
 Run `npm ci` to install dependencies, then `npm run lint` for recommended Biome lint rules,
 `npm run format` to apply formatting, and `npm run check` to check lint, formatting, and
-import organization. CI runs `npm run check` and `npm test` on pushes to `main` and pull requests.
+import organization. CI runs `npm run check`, `npm run typecheck` and `npm test` on pushes to
+`main` and pull requests.
+
+`npm run typecheck` runs TypeScript over the plain-JS sources (`tsc`, nothing emitted, no build
+step). Shared result shapes live in `types.d.ts`, and `backend.js` checks the IMAP and Gmail API
+backends against the same `MailOps` contract, so a field one backend drops or renames fails the
+check. Checking is lenient for now; tests are not type-checked.
 
 Run `npm test` for offline regression tests. They use temporary registries and a local MCP
 process; no mailbox connections or Keychain password lookups are needed.

@@ -1,0 +1,18 @@
+{
+  // Type-checks the plain-JS sources against types.d.ts. No build: nothing is emitted, and the
+  // code that runs is the code in this repository. Run with `npm run typecheck`.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    // Lenient for now; tighten flag by flag (noImplicitAny, strictNullChecks) as files are annotated.
+    "strict": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  // Tests use deliberately partial fakes (an Account with only an id); they are not type-checked.
+  "include": ["*.js", "types.d.ts", "scripts/**/*.js"]
+}

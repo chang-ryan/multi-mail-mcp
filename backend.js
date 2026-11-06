@@ -1,7 +1,21 @@
+/** @import { Account, GmailApi, MailOps } from './types.js' */
 import { saveRoot } from './config.js';
 import * as gmail from './gmail.js';
 import * as imap from './mail.js';
 
+// The cross-backend contract: both modules must implement every operation with the shared
+// result shapes. If either drifts (a missing field, a renamed one), typecheck fails here.
+/** @type {MailOps<Account>} */
+const imapOps = imap;
+/** @type {MailOps<GmailApi>} */
+const gmailOps = gmail;
+
+/**
+ * @param {Function} imapOp
+ * @param {Function} gmailOp
+ * @param {Account} account
+ * @param {...any} args
+ */
 function dispatch(imapOp, gmailOp, account, ...args) {
   if (args[0]?.save && !saveRoot()) {
     throw new Error('Saving is off for this harness (MAIL_SAVE_ROOT is not set)');
@@ -19,12 +33,20 @@ function dispatch(imapOp, gmailOp, account, ...args) {
   return imapOp(account, ...args);
 }
 
-export const listFolders = (a) => dispatch(imap.listFolders, gmail.listFolders, a);
+/** @type {MailOps<Account>['listFolders']} */
+export const listFolders = (a) => dispatch(imapOps.listFolders, gmailOps.listFolders, a);
+/** @type {MailOps<Account>['listMessages']} */
 export const listMessages = (a, options) =>
-  dispatch(imap.listMessages, gmail.listMessages, a, options);
+  dispatch(imapOps.listMessages, gmailOps.listMessages, a, options);
+/** @type {MailOps<Account>['search']} */
 export const search = (a, criteria, limit) =>
-  dispatch(imap.search, gmail.search, a, criteria, limit);
-export const getMessage = (a, options) => dispatch(imap.getMessage, gmail.getMessage, a, options);
-export const getThread = (a, options) => dispatch(imap.getThread, gmail.getThread, a, options);
+  dispatch(imapOps.search, gmailOps.search, a, criteria, limit);
+/** @type {MailOps<Account>['getMessage']} */
+export const getMessage = (a, options) =>
+  dispatch(imapOps.getMessage, gmailOps.getMessage, a, options);
+/** @type {MailOps<Account>['getThread']} */
+export const getThread = (a, options) =>
+  dispatch(imapOps.getThread, gmailOps.getThread, a, options);
+/** @type {MailOps<Account>['getAttachments']} */
 export const getAttachments = (a, options) =>
-  dispatch(imap.getAttachments, gmail.getAttachments, a, options);
+  dispatch(imapOps.getAttachments, gmailOps.getAttachments, a, options);
