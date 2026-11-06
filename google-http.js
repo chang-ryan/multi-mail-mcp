@@ -27,6 +27,11 @@ function validateDestination(value, method) {
   }
 }
 
+/**
+ * @param {string} url
+ * @param {RequestInit} [options]
+ * @param {{ fetchImpl?: typeof fetch, maxBytes?: number, onBytes?: (bytes: number) => void }} [limits]
+ */
 export async function googleJson(
   url,
   options = {},
@@ -73,6 +78,7 @@ export async function googleJson(
     throw new Error(`Google returned an invalid response (HTTP ${response.status})`);
   }
   if (!response.ok) {
+    /** @type {Error & { status?: number, oauthCode?: string }} */
     const error = new Error(`Google request failed (HTTP ${response.status})`);
     error.status = response.status;
     // Only fixed, recognized codes cross the error boundary.
