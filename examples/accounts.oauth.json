@@ -7,7 +7,7 @@
       "label": "Personal",
       "backend": "gmail-api"
     },
-    "jaw": {
+    "widgets": {
       "type": "gmail",
       "user": "you@company.example",
       "label": "Company",
