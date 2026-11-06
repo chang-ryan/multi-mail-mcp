@@ -338,7 +338,7 @@ test('MCP advertises both UID representations and enforces account/backend isola
     JSON.stringify({
       accounts: {
         personal: { type: 'gmail', user: 'first@example.test' },
-        jaw: { type: 'gmail', user: 'second@example.test' },
+        widgets: { type: 'gmail', user: 'second@example.test' },
         proton: { type: 'proton', user: 'third@example.test' },
       },
     }),
@@ -375,7 +375,7 @@ test('MCP advertises both UID representations and enforces account/backend isola
     ['mail__get_message', { folder: 'INBOX', uid: 123 }, /IMAP numeric UIDs/],
     [
       'mail__get_message',
-      { account: 'jaw', folder: 'INBOX', uid: 'gmail:abc123' },
+      { account: 'widgets', folder: 'INBOX', uid: 'gmail:abc123' },
       /not available here/,
     ],
     [
@@ -390,13 +390,13 @@ test('MCP advertises both UID representations and enforces account/backend isola
     assert.match(payload.error, error);
     assert.ok(payload._untrusted);
   }
-  const denied = spawnSync(process.execPath, [path.join(repo, 'index.js'), 'auth', 'jaw'], {
+  const denied = spawnSync(process.execPath, [path.join(repo, 'index.js'), 'auth', 'widgets'], {
     env,
     encoding: 'utf8',
   });
   assert.equal(denied.status, 1);
   assert.match(denied.stderr, /not available here/);
-  for (const override of ['jaw', 'proton', '*']) {
+  for (const override of ['widgets', 'proton', '*']) {
     const invalid = spawnSync(process.execPath, [path.join(repo, 'index.js')], {
       env: { ...env, MAIL_GMAIL_API_ACCOUNTS: override },
       encoding: 'utf8',

@@ -181,7 +181,7 @@ test('refresh is automatic, single-flight, cached, identity-checked and isolated
   const values = await Promise.all([manager.get(account), manager.get(account)]);
   assert.deepEqual(values, ['access-1', 'access-1']);
   assert.equal(await manager.get(account), 'access-1');
-  const second = { ...account, id: 'jaw', user: 'second@example.test' };
+  const second = { ...account, id: 'widgets', user: 'second@example.test' };
   assert.equal(await manager.get(second), 'access-2');
   assert.equal(reads, 2);
   assert.equal(refreshes, 2);

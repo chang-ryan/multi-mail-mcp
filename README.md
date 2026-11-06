@@ -144,10 +144,8 @@ consent URL, never the returned code or tokens. Keep that temporary URL private 
    **Use this client for an AI-powered agent**. Download its `installed` JSON with a localhost
    redirect, and keep it outside the repo with `chmod 600 /absolute/path/to/client_secret.json`.
 
-For the current private setup, the project is **Multi Mail MCP** (`multi-mail-mcp-513801`) and
-client name is **Multi Mail MCP Desktop**. The API and desktop client are already configured.
-If consent fails, confirm both `ryanhchang@gmail.com` and `ryan@waterandflower.com` are listed as
-test users; their registration cannot be confirmed by the local login command. Workspace policy
+If consent fails, confirm every Gmail address you will authorize is listed as a test user on the
+OAuth consent screen; the local login command cannot confirm test-user registration. Workspace policy
 can also block the client.
 
 ### Explicit login, one account at a time
@@ -156,7 +154,7 @@ Run from this checkout, substituting the actual client file path:
 
 ```sh
 MAIL_ACCOUNTS=personal node index.js auth personal --client /absolute/path/to/client_secret.json
-MAIL_ACCOUNTS=jaw node index.js auth jaw --client /absolute/path/to/client_secret.json
+MAIL_ACCOUNTS=widgets node index.js auth widgets --client /absolute/path/to/client_secret.json
 ```
 
 You can set `MAIL_GOOGLE_CLIENT_FILE` instead of `--client`. `--no-open` prints the consent URL
@@ -177,7 +175,7 @@ First exercise the API with a process-local override. This does not edit the reg
 
 ```sh
 MAIL_ACCOUNTS=personal MAIL_GMAIL_API_ACCOUNTS=personal node index.js --check
-MAIL_ACCOUNTS=jaw MAIL_GMAIL_API_ACCOUNTS=jaw node index.js --check
+MAIL_ACCOUNTS=widgets MAIL_GMAIL_API_ACCOUNTS=widgets node index.js --check
 ```
 
 Use [examples/gmail-api.mcp.json](examples/gmail-api.mcp.json) to start an MCP process for both
@@ -187,7 +185,7 @@ The optional live check calls the actual stdio MCP tools, reports only statuses,
 prints email content or saves attachments:
 
 ```sh
-MAIL_ACCOUNTS=personal,jaw MAIL_GMAIL_API_ACCOUNTS=personal,jaw node scripts/verify-gmail-mcp.js
+MAIL_ACCOUNTS=personal,widgets MAIL_GMAIL_API_ACCOUNTS=personal,widgets node scripts/verify-gmail-mcp.js
 ```
 
 It reports any skipped reads or attachment checks if no suitable small message exists.
@@ -276,7 +274,7 @@ To revoke one account's Google grant and remove its OAuth Keychain item:
 
 ```sh
 MAIL_ACCOUNTS=personal node index.js revoke personal
-MAIL_ACCOUNTS=jaw node index.js revoke jaw
+MAIL_ACCOUNTS=widgets node index.js revoke widgets
 ```
 
 Revocation is an explicit CLI operation, never an MCP tool. Google may revoke the app's entire
@@ -288,7 +286,7 @@ only the corresponding local OAuth item:
 
 ```sh
 security delete-generic-password -s multi-mail-mcp.gmail-oauth -a personal
-security delete-generic-password -s multi-mail-mcp.gmail-oauth -a jaw
+security delete-generic-password -s multi-mail-mcp.gmail-oauth -a widgets
 ```
 
 Deleting a local item alone does not revoke Google's grant. To remove old app passwords after a

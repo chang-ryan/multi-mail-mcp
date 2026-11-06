@@ -4,8 +4,8 @@
       "command": "/absolute/path/to/node",
       "args": ["/absolute/path/to/multi-mail-mcp/index.js"],
       "env": {
-        "MAIL_ACCOUNTS": "personal,jaw",
-        "MAIL_GMAIL_API_ACCOUNTS": "personal,jaw"
+        "MAIL_ACCOUNTS": "personal,widgets",
+        "MAIL_GMAIL_API_ACCOUNTS": "personal,widgets"
       }
     }
   }
