@@ -3,6 +3,23 @@ export const GMAIL_ROOT = 'https://gmail.googleapis.com/gmail/v1/users/me/';
 export const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 export const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+export const CALENDAR_ROOT = 'https://www.googleapis.com/calendar/v3/';
+export const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
+
+// Calendar paths and methods the event tools use; anything else (ACLs, calendar deletion,
+// moves, watches, calendar-list changes) is refused before sending. Which calendars an account
+// may reach is enforced per account in calendar-core.js against accounts.json.
+const CAL_ID = '[A-Za-z0-9._%+-]{1,300}';
+const EVENT_ID = '[A-Za-z0-9_-]{1,1024}';
+/** @type {[RegExp, string[]][]} */
+const CALENDAR_RULES = [
+  [/^\/calendar\/v3\/calendars$/, ['POST']],
+  [/^\/calendar\/v3\/users\/me\/calendarList$/, ['GET']],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}$`), ['GET']],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events$`), ['GET', 'POST']],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events/import$`), ['POST']],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events/${EVENT_ID}$`), ['GET', 'PATCH', 'DELETE']],
+];
 
 function validateDestination(value, method) {
   let url;
@@ -17,12 +34,14 @@ function validateDestination(value, method) {
     /^\/gmail\/v1\/users\/me\/(?:profile|labels|messages|messages\/[a-f0-9]{1,32}|threads\/[a-f0-9]{1,32})$/.test(
       url.pathname,
     );
-  if (
-    url.username ||
-    url.password ||
-    url.hash ||
-    (credentialEndpoint ? method !== 'POST' : !gmailRead || method !== 'GET')
-  ) {
+  const userinfo = url.href === USERINFO_URL && method === 'GET';
+  const calendar =
+    url.origin === 'https://www.googleapis.com' &&
+    CALENDAR_RULES.some(([path, methods]) => path.test(url.pathname) && methods.includes(method));
+  const allowed = credentialEndpoint
+    ? method === 'POST'
+    : userinfo || calendar || (gmailRead && method === 'GET');
+  if (url.username || url.password || url.hash || !allowed) {
     throw new Error('Google request destination or method refused');
   }
 }

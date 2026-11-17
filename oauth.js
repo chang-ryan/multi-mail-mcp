@@ -6,14 +6,57 @@ import { GMAIL_ROOT, googleJson, REVOKE_URL, SCOPE, TOKEN_URL } from './google-h
 
 export const OAUTH_SERVICE = 'multi-mail-mcp.gmail-oauth';
 const ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-const loginHint = (a) =>
-  `Gmail login needed for "${a.id}". Run MAIL_ACCOUNTS=${a.id} node index.js auth ${a.id} --client /absolute/path/to/client_secret.json. If consent is blocked, register ${a.user} under Google Auth Platform > Audience > Test users.`;
 
-function keychainRead(id) {
+/**
+ * @typedef {object} OAuthProfile
+ * @property {string} name Shown in messages, e.g. "Gmail".
+ * @property {string} service Keychain service holding this product's credentials.
+ * @property {string[]} scopes The exact granted scope set; anything more or less is refused.
+ * @property {string} requestScope The scope parameter sent to Google's consent screen.
+ * @property {string} scopeError
+ * @property {string} command Login command for hints; every %s becomes the account id.
+ * @property {(accessToken: string, fetchImpl: typeof fetch, signal?: AbortSignal) => Promise<string>} identity
+ *   Returns the address the token belongs to.
+ * @property {(accessToken: string, fetchImpl: typeof fetch, previous: any, account: import('./types.js').Account) => Promise<Record<string, unknown>>} [prepare]
+ *   Runs after consent and before saving; returns extra non-secret fields to store.
+ * @property {string[]} [metadata] Stored non-secret fields exposed by the token manager.
+ */
+
+/** @type {OAuthProfile} */
+export const GMAIL = {
+  name: 'Gmail',
+  service: OAUTH_SERVICE,
+  scopes: [SCOPE],
+  requestScope: SCOPE,
+  scopeError:
+    'OAuth grant must contain only gmail.readonly; revoke the old grant and authorize again',
+  command: 'MAIL_ACCOUNTS=%s node index.js auth %s',
+  async identity(accessToken, fetchImpl, signal) {
+    const profile = await googleJson(
+      `${GMAIL_ROOT}profile`,
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal },
+      { fetchImpl },
+    );
+    return profile.emailAddress;
+  },
+  async prepare(accessToken, fetchImpl) {
+    await googleJson(
+      `${GMAIL_ROOT}labels`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      { fetchImpl },
+    );
+    return {};
+  },
+};
+
+const loginHint = (a, profile = GMAIL) =>
+  `${profile.name} login needed for "${a.id}". Run ${profile.command.replaceAll('%s', a.id)} --client /absolute/path/to/client_secret.json. If consent is blocked, register ${a.user} under Google Auth Platform > Audience > Test users.`;
+
+function keychainRead(id, service = OAUTH_SERVICE) {
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/bin/security',
-      ['find-generic-password', '-s', OAUTH_SERVICE, '-a', id, '-w'],
+      ['find-generic-password', '-s', service, '-a', id, '-w'],
       { timeout: 10000, maxBuffer: 16384, env: { PATH: '/usr/bin:/bin' } },
       (err, out) => {
         if (err) return reject(new Error('OAuth Keychain item missing or inaccessible'));
@@ -29,10 +72,11 @@ function keychainRead(id) {
 
 // The credential travels over stdin to security's command interpreter, never argv or a file.
 // Base64url and a validated account id avoid interpreter quoting/injection entirely.
-export function keychainWrite(id, credential) {
+export function keychainWrite(id, credential, service = OAUTH_SERVICE) {
   if (!ID.test(id)) throw new Error('Invalid Keychain account id');
+  if (!/^[a-z0-9.-]{1,64}$/.test(service)) throw new Error('Invalid Keychain service');
   const encoded = Buffer.from(JSON.stringify(credential)).toString('base64url');
-  const command = `add-generic-password -U -s ${OAUTH_SERVICE} -a ${id} -w ${encoded}\n`;
+  const command = `add-generic-password -U -s ${service} -a ${id} -w ${encoded}\n`;
   // security's interactive parser has a 4096-byte line buffer. A truncated update could
   // replace a working credential with invalid data before the read-back detects failure.
   if (Buffer.byteLength(command) >= 4096)
@@ -72,7 +116,7 @@ export function keychainWrite(id, credential) {
         return;
       }
       try {
-        const stored = await keychainRead(id);
+        const stored = await keychainRead(id, service);
         if (JSON.stringify(stored) !== JSON.stringify(credential)) throw new Error();
         resolve();
       } catch {
@@ -83,11 +127,11 @@ export function keychainWrite(id, credential) {
   });
 }
 
-function keychainDelete(id) {
+function keychainDelete(id, service = OAUTH_SERVICE) {
   return new Promise((resolve, reject) => {
     execFile(
       '/usr/bin/security',
-      ['delete-generic-password', '-s', OAUTH_SERVICE, '-a', id],
+      ['delete-generic-password', '-s', service, '-a', id],
       { timeout: 10000 },
       (err) => (err ? reject(new Error('Could not delete OAuth Keychain item')) : resolve()),
     );
@@ -131,15 +175,28 @@ export function readDesktopClient(file) {
   return { client_id: client.client_id, client_secret: client.client_secret };
 }
 
-export function validateScope(scope) {
-  const scopes = typeof scope === 'string' ? scope.trim().split(/\s+/) : [];
-  if (scopes.length !== 1 || scopes[0] !== SCOPE)
-    throw new Error(
-      'OAuth grant must contain only gmail.readonly; revoke the old grant and authorize again',
-    );
+// Google may report the `email` scope by its long name.
+const SCOPE_ALIASES = { email: 'https://www.googleapis.com/auth/userinfo.email' };
+
+/** @param {unknown} scope @param {OAuthProfile} [profile] */
+export function validateScope(scope, profile = GMAIL) {
+  const granted =
+    typeof scope === 'string'
+      ? scope
+          .trim()
+          .split(/\s+/)
+          .map((s) => SCOPE_ALIASES[s] || s)
+      : [];
+  const expected = new Set(profile.scopes);
+  if (
+    new Set(granted).size !== granted.length ||
+    granted.length !== expected.size ||
+    !granted.every((s) => expected.has(s))
+  )
+    throw new Error(profile.scopeError);
 }
 
-export async function tokenRequest(params, fetchImpl = fetch, signal) {
+export async function tokenRequest(params, fetchImpl = fetch, signal, profile = GMAIL) {
   const token = await googleJson(
     TOKEN_URL,
     { method: 'POST', body: new URLSearchParams(params), signal },
@@ -153,44 +210,56 @@ export async function tokenRequest(params, fetchImpl = fetch, signal) {
     token.expires_in <= 0
   )
     throw new Error('Google returned an invalid access token response');
-  if (token.scope !== undefined) validateScope(token.scope);
+  if (token.scope !== undefined) validateScope(token.scope, profile);
   return token;
 }
 
-export async function verifyIdentity(account, accessToken, fetchImpl = fetch, signal) {
-  const profile = await googleJson(
-    `${GMAIL_ROOT}profile`,
-    { headers: { Authorization: `Bearer ${accessToken}` }, signal },
-    { fetchImpl },
-  );
-  if (
-    typeof profile.emailAddress !== 'string' ||
-    profile.emailAddress.toLowerCase() !== account.user.toLowerCase()
-  ) {
+export async function verifyIdentity(
+  account,
+  accessToken,
+  fetchImpl = fetch,
+  signal,
+  profile = GMAIL,
+) {
+  const address = await profile.identity(accessToken, fetchImpl, signal);
+  if (typeof address !== 'string' || address.toLowerCase() !== account.user.toLowerCase()) {
     throw new Error(
-      `Authorized Gmail address does not match configured account "${account.id}"; credentials were not saved`,
+      `Authorized ${profile.name} address does not match configured account "${account.id}"; credentials were not saved`,
     );
   }
-  return profile;
+  return address;
 }
 
-export function createTokenManager({ read = keychainRead, fetchImpl = fetch } = {}) {
+/**
+ * @param {{ read?: Function, fetchImpl?: typeof fetch, profile?: OAuthProfile | ((account: any) => OAuthProfile) }} [options]
+ *   `profile` may depend on the account (calendar scopes follow each account's configured calendars).
+ */
+export function createTokenManager({
+  read = keychainRead,
+  fetchImpl = fetch,
+  profile: profileFor = GMAIL,
+} = {}) {
   const cache = new Map();
   const pending = new Map();
   return {
     invalidate(account) {
       cache.delete(`${account.id}:${account.user}`);
     },
+    /** Stored non-secret fields (profile.metadata) from the credential behind the last `get`. */
+    metadata(account) {
+      return cache.get(`${account.id}:${account.user}`)?.metadata || {};
+    },
     async get(account, signal) {
+      const profile = typeof profileFor === 'function' ? profileFor(account) : profileFor;
       const key = `${account.id}:${account.user}`;
       if ((cache.get(key)?.expires || 0) > Date.now() + 60000) return cache.get(key).token;
       if (pending.has(key)) return pending.get(key);
       const work = (async () => {
         let c;
         try {
-          c = await read(account.id);
+          c = await read(account.id, profile.service);
         } catch {
-          throw new Error(loginHint(account));
+          throw new Error(loginHint(account, profile));
         }
         if (
           c?.address?.toLowerCase() !== account.user.toLowerCase() ||
@@ -198,9 +267,9 @@ export function createTokenManager({ read = keychainRead, fetchImpl = fetch } = 
           !c.client_id ||
           !c.client_secret
         ) {
-          throw new Error(loginHint(account));
+          throw new Error(loginHint(account, profile));
         }
-        validateScope(c.scope);
+        validateScope(c.scope, profile);
         let token;
         try {
           token = await tokenRequest(
@@ -212,11 +281,12 @@ export function createTokenManager({ read = keychainRead, fetchImpl = fetch } = 
             },
             fetchImpl,
             signal,
+            profile,
           );
         } catch (err) {
           if (err.oauthCode === 'invalid_grant' || err.status === 401)
             throw new Error(
-              `${loginHint(account)} Testing-mode refresh tokens expire after seven days.`,
+              `${loginHint(account, profile)} Testing-mode refresh tokens expire after seven days.`,
             );
           if (err.oauthCode === 'invalid_client')
             throw new Error(
@@ -224,10 +294,11 @@ export function createTokenManager({ read = keychainRead, fetchImpl = fetch } = 
             );
           throw err;
         }
-        await verifyIdentity(account, token.access_token, fetchImpl, signal);
+        await verifyIdentity(account, token.access_token, fetchImpl, signal, profile);
         cache.set(key, {
           token: token.access_token,
           expires: Date.now() + token.expires_in * 1000,
+          metadata: Object.fromEntries((profile.metadata || []).map((k) => [k, c[k]])),
         });
         return token.access_token;
       })();
@@ -245,12 +316,12 @@ export const tokenManager = createTokenManager();
 /**
  * @param {import('./types.js').Account} account
  * @param {{ client_id: string, client_secret?: string }} client
- * @param {{ openBrowser?: (url: string) => Promise<void>, timeoutMs?: number, onReady?: (url: string) => void }} [options]
+ * @param {{ openBrowser?: (url: string) => Promise<void>, timeoutMs?: number, onReady?: (url: string) => void, profile?: OAuthProfile }} [options]
  */
 export async function loopbackAuthorization(
   account,
   client,
-  { openBrowser, timeoutMs = 300000, onReady = () => {} } = {},
+  { openBrowser, timeoutMs = 300000, onReady = () => {}, profile = GMAIL } = {},
 ) {
   const verifier = randomBytes(32).toString('base64url');
   const state = randomBytes(32).toString('base64url');
@@ -302,7 +373,7 @@ export async function loopbackAuthorization(
     }
     if (url.searchParams.has('error')) {
       res.end('Authorization declined. Return to your terminal.');
-      fail(new Error(loginHint(account)));
+      fail(new Error(loginHint(account, profile)));
       return;
     }
     const codes = url.searchParams.getAll('code');
@@ -330,7 +401,7 @@ export async function loopbackAuthorization(
       client_id: client.client_id,
       redirect_uri,
       response_type: 'code',
-      scope: SCOPE,
+      scope: profile.requestScope,
       access_type: 'offline',
       prompt: 'consent',
       include_granted_scopes: 'false',
@@ -367,12 +438,22 @@ function launchBrowser(url) {
 export async function authorize(
   account,
   clientFile,
-  { noOpen = false, fetchImpl = fetch, write = keychainWrite, flow = loopbackAuthorization } = {},
+  {
+    noOpen = false,
+    fetchImpl = fetch,
+    write = keychainWrite,
+    read = keychainRead,
+    flow = loopbackAuthorization,
+    profile = GMAIL,
+    manager = tokenManager,
+  } = {},
 ) {
-  if (account.type !== 'gmail') throw new Error('OAuth login is available only for Gmail accounts');
+  if (account.type !== 'gmail')
+    throw new Error(`${profile.name} login is available only for Google accounts`);
   const client = readDesktopClient(clientFile);
   const grant = await flow(account, client, {
     openBrowser: noOpen ? undefined : launchBrowser,
+    profile,
     onReady: (url) => {
       console.log(`Authorize ${account.user} in your browser:\n${url}`);
     },
@@ -380,49 +461,59 @@ export async function authorize(
   const token = await tokenRequest(
     { ...client, ...grant, grant_type: 'authorization_code' },
     fetchImpl,
+    undefined,
+    profile,
   );
-  validateScope(token.scope);
+  validateScope(token.scope, profile);
   if (typeof token.refresh_token !== 'string' || !token.refresh_token)
     throw new Error(
       'Google did not return a refresh token; revoke this app grant, then run auth again',
     );
-  await verifyIdentity(account, token.access_token, fetchImpl);
+  await verifyIdentity(account, token.access_token, fetchImpl, undefined, profile);
   // Exercise offline refresh before saving, then verify that refreshed access still belongs here.
   const refreshed = await tokenRequest(
     { ...client, refresh_token: token.refresh_token, grant_type: 'refresh_token' },
     fetchImpl,
+    undefined,
+    profile,
   );
-  await verifyIdentity(account, refreshed.access_token, fetchImpl);
-  await googleJson(
-    `${GMAIL_ROOT}labels`,
-    { headers: { Authorization: `Bearer ${refreshed.access_token}` } },
-    { fetchImpl },
+  await verifyIdentity(account, refreshed.access_token, fetchImpl, undefined, profile);
+  let previous = null;
+  try {
+    previous = await read(account.id, profile.service);
+    if (previous?.address?.toLowerCase() !== account.user.toLowerCase()) previous = null;
+  } catch {
+    previous = null;
+  }
+  const extra = profile.prepare
+    ? await profile.prepare(refreshed.access_token, fetchImpl, previous, account)
+    : {};
+  await write(
+    account.id,
+    {
+      ...extra,
+      ...client,
+      refresh_token: token.refresh_token,
+      scope: profile.scopes.join(' '),
+      address: account.user,
+      authorized_at: new Date().toISOString(),
+    },
+    profile.service,
   );
-  await write(account.id, {
-    ...client,
-    refresh_token: token.refresh_token,
-    scope: SCOPE,
-    address: account.user,
-    authorized_at: new Date().toISOString(),
-  });
-  tokenManager.invalidate(account);
-  console.log(
-    `Authorized and tested ${account.id} (${account.user}); OAuth credential saved in Keychain. Backend unchanged. Enable gmail-api explicitly after checks.`,
-  );
+  manager.invalidate(account);
+  return extra;
 }
 
-export async function revoke(account) {
-  if (account.type !== 'gmail') throw new Error('OAuth revocation is available only for Gmail');
-  const c = await keychainRead(account.id);
+export async function revoke(account, { profile = GMAIL, manager = tokenManager } = {}) {
+  if (account.type !== 'gmail')
+    throw new Error(`${profile.name} revocation is available only for Google accounts`);
+  const c = await keychainRead(account.id, profile.service);
   if (c.address?.toLowerCase() !== account.user.toLowerCase())
     throw new Error('OAuth credential address mismatch');
   await googleJson(REVOKE_URL, {
     method: 'POST',
     body: new URLSearchParams({ token: c.refresh_token }),
   });
-  await keychainDelete(account.id);
-  tokenManager.invalidate(account);
-  console.log(
-    `Revoked and removed OAuth credential for ${account.id}. Existing app password was not changed.`,
-  );
+  await keychainDelete(account.id, profile.service);
+  manager.invalidate(account);
 }
