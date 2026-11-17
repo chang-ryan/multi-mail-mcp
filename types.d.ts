@@ -20,6 +20,8 @@ export interface Account {
   readonly backend: BackendName;
   readonly user: string;
   readonly label: string;
+  /** Compliance entity tag (calendar UIDs and the hub key on it). Defaults to the id. */
+  readonly entity?: string;
   readonly host: string;
   readonly port: number;
   readonly secure: boolean;
