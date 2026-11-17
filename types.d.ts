@@ -22,11 +22,23 @@ export interface Account {
   readonly label: string;
   /** Compliance entity tag (calendar UIDs and the hub key on it). Defaults to the id. */
   readonly entity?: string;
+  /** Google calendars this account may use, by your own key ("*" = any visible calendar). */
+  readonly calendars?: Readonly<Record<string, CalendarConfig>>;
   readonly host: string;
   readonly port: number;
   readonly secure: boolean;
   readonly doSTARTTLS?: boolean;
   readonly tls?: Readonly<Record<string, unknown>>;
+}
+
+export interface CalendarConfig {
+  /** Name of a calendar this app creates at login. */
+  readonly create?: string;
+  /** An existing calendar: "primary" or a calendar id. */
+  readonly id?: string;
+  readonly access: 'read' | 'write';
+  /** Compliance conventions: entity title prefix, Body/Entity line, stable UIDs, 28d/7d reminders. */
+  readonly kind?: 'deadlines';
 }
 
 export interface Folder {

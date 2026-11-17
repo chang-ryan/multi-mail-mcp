@@ -230,10 +230,14 @@ export async function verifyIdentity(
   return address;
 }
 
+/**
+ * @param {{ read?: Function, fetchImpl?: typeof fetch, profile?: OAuthProfile | ((account: any) => OAuthProfile) }} [options]
+ *   `profile` may depend on the account (calendar scopes follow each account's configured calendars).
+ */
 export function createTokenManager({
   read = keychainRead,
   fetchImpl = fetch,
-  profile = GMAIL,
+  profile: profileFor = GMAIL,
 } = {}) {
   const cache = new Map();
   const pending = new Map();
@@ -246,6 +250,7 @@ export function createTokenManager({
       return cache.get(`${account.id}:${account.user}`)?.metadata || {};
     },
     async get(account, signal) {
+      const profile = typeof profileFor === 'function' ? profileFor(account) : profileFor;
       const key = `${account.id}:${account.user}`;
       if ((cache.get(key)?.expires || 0) > Date.now() + 60000) return cache.get(key).token;
       if (pending.has(key)) return pending.get(key);

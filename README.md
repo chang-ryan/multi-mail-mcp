@@ -1,6 +1,6 @@
 # multi-mail-mcp
 
-Multi-account MCP server: read-only mail for Proton Mail (via Proton Bridge) and Gmail (Gmail API with OAuth, or IMAP with app passwords), plus internal deadlines on Google Calendar. One server, one registry: a single agent can reach every account a session allows.
+Multi-account MCP server: read-only mail for Proton Mail (via Proton Bridge) and Gmail (Gmail API with OAuth, or IMAP with app passwords), plus Google Calendar with per-calendar read/write access. One server, one registry: a single agent can reach every account a session allows.
 
 ```
 mail__list_accounts    the mailboxes this session may read
@@ -12,15 +12,15 @@ mail__list_folders     folders (Gmail: labels)
 mail__get_attachments  base64, or saved into the session's save folder
 ```
 
-Calendar tools, present only when `CAL_ACCOUNTS` is set (see [Google Calendar deadlines](#google-calendar-deadlines)):
+Calendar tools, present only when `CAL_ACCOUNTS` is set (see [Google Calendar](#google-calendar)):
 
 ```
-cal__list_accounts     the Deadlines calendars this session may use
-cal__list_deadlines    upcoming deadlines; omit account to see every allowed account together
-cal__get_deadline      one deadline by uid
-cal__add_deadline      all-day or timed, notes, agency tag, RRULE, reminders
-cal__update_deadline   change any field; omitted fields stay
-cal__delete_deadline   remove a deadline (every occurrence)
+cal__list_calendars    the calendars each account may use, read or write
+cal__list_events       events in a range; omit account and calendar to see everything together
+cal__get_event         one event by uid
+cal__add_event         all-day or timed, location, notes, RRULE, reminders
+cal__update_event      change any field; omitted fields stay
+cal__delete_event      remove an event (every occurrence)
 ```
 
 Mail: no send, reply, draft, delete, move, flag, or mark-read. Mailboxes are opened read-only and
@@ -29,7 +29,7 @@ bodies fetched with `BODY.PEEK`; the Gmail API backend issues only read requests
 ## Design
 
 - **Per-process scoping.** `MAIL_ACCOUNTS` lists the account ids whose mail a process may read and
-  `CAL_ACCOUNTS` those whose Deadlines calendar it may use (`*` for all). Neither widens the other;
+  `CAL_ACCOUNTS` those whose configured calendars it may use (`*` for all). Neither widens the other;
   with both unset the server refuses to start.
 - **Fixed hosts.** `proton` connects only to the local Bridge on `127.0.0.1`; `gmail` only to
   `imap.gmail.com:993` over TLS. The Gmail API backend uses fixed Google HTTPS endpoints.
@@ -307,38 +307,70 @@ delete service `multi-mail-mcp` items separately; no OAuth command changes those
 
 The desktop flow follows Google's [installed-app OAuth guidance](https://developers.google.com/identity/protocols/oauth2/native-app).
 
-## Google Calendar deadlines
+## Google Calendar
 
-Each Google account gets its own private calendar, **Deadlines [ENTITY]**, for internal due dates
-and reminders: filings, renewals, payments. Personal deadlines live on the personal account and
-company deadlines on the company account. A session sees only the calendars `CAL_ACCOUNTS` allows.
+Each Google account lists the calendars it may use in `accounts.json`, under names you choose:
 
-- **Narrowest scope.** The grant is `calendar.app.created` plus `openid email` (used only to
-  confirm the signed-in address). Google lets the app reach only calendars it created: never a
-  primary calendar, a shared calendar or a meeting. The HTTP layer also refuses every other
-  calendar path and method before a request is sent.
-- **Internal only.** Deadlines cannot have guests, and every change sends no notifications, so a
-  calendar write cannot email anyone. Events are marked free (they do not block time) and private.
-- **Separate credentials.** Calendar logins use Keychain service `multi-mail-mcp.gcal-oauth`, apart
-  from Gmail's. A calendar token cannot read mail; a mail token cannot write calendars.
-- **Shared format.** UIDs are the obligation ids: existing ones are kept, new ones are
-  `<entity>-<slug>@compliance`. Titles start with `ENTITY:`, notes end with a line such as
-  `Body: CA-FTB · Entity: acme`, recurrence stays as RRULEs, and the default reminders are 28 and
-  7 days before. All-day deadlines use America/Los_Angeles. `calendar-core.js` exports the
-  operations so other local tools (a dashboard, a sync job) can call them without MCP.
-- Proton has no calendar API, so Proton accounts are not supported yet.
+```json
+"acme": {
+  "type": "gmail", "user": "ops@acme.example", "entity": "acme",
+  "calendars": {
+    "deadlines": { "create": "Deadlines [ACME]", "access": "write", "kind": "deadlines" },
+    "travel":    { "create": "Travel", "access": "write" },
+    "main":      { "id": "primary", "access": "read" },
+    "board":     { "id": "abc123@group.calendar.google.com", "access": "write" },
+    "*":         { "access": "read" }
+  }
+}
+```
+
+- `create` makes a new calendar with that name at login (and reuses it on later logins).
+- `id` uses an existing calendar: `primary`, or an id from Google Calendar > Settings > the
+  calendar > Integrate calendar.
+- `"*"` allows any calendar the account can see, addressed by id; `cal__list_calendars` lists
+  them. A calendar listed by name keeps its own access even when `"*"` is broader.
+- `access` is `read` or `write` per calendar. Tools refer to calendars by these names.
+- `kind: "deadlines"` turns on the compliance format below. Other calendars hold plain events.
+
+**Scope follows the config.** Login requests exactly what the account's calendars need:
+
+| Calendars configured | Google scope | Who confines access |
+| --- | --- | --- |
+| only `create` | `calendar.app.created` | Google: the app can reach only calendars it created |
+| any `id` or `"*"`, all read | adds `calendar.events.readonly` | this server, against `accounts.json` |
+| any `id` or `"*"` with write | adds `calendar.events` | this server, against `accounts.json` |
+| `"*"` | adds `calendar.calendarlist.readonly` | (to list visible calendars) |
+
+Every login also includes `openid email`, used only to confirm the signed-in address. A config
+change that needs a different scope makes the server ask for `auth --calendar` again; the grant
+must match exactly. Requests outside the configured calendars are refused before they are sent,
+and the HTTP layer allows only the event paths and methods the tools use (no ACLs, calendar
+deletion, moves or watches).
+
+**Rules on every calendar.** Guests are never added and every change sends no notifications.
+Events that have guests (real meetings) and special Google events (out of office, focus time,
+working location, events from Gmail) are read-only here: change them in Google Calendar.
+Approve calendar changes in the harness (do not auto-allow `cal__add_event`,
+`cal__update_event` or `cal__delete_event`); listing can be auto-allowed.
+
+**Deadlines format** (`kind: "deadlines"`), shared with `.ics` files and other local tools:
+UIDs are obligation ids (existing ones kept; new ones `<entity>-<slug>@compliance`), titles start
+with `ENTITY:`, notes end with a line such as `Body: CA-FTB · Entity: acme`, recurrence stays as
+RRULEs, default reminders are 28 and 7 days before, and events are marked free and private.
+`calendar-core.js` exports the operations so a dashboard or sync job can call them without MCP.
+Times use America/Los_Angeles. Proton has no calendar API, so Proton accounts are not supported yet.
 
 ### Setup
 
-1. Add an `"entity"` tag to each account in `accounts.json` (for example `"entity": "acme"`). It
-   prefixes titles and UIDs; it defaults to the account id.
+1. Add `"entity"` (a short tag used in deadline titles and UIDs; defaults to the account id) and
+   `"calendars"` to each Google account in `accounts.json`.
 2. In the [Google Cloud console](https://console.cloud.google.com), in the same project as the
    Gmail OAuth client: **APIs & Services > Library > Google Calendar API > Enable**; under
-   **Google Auth Platform > Data Access** add `https://www.googleapis.com/auth/calendar.app.created`;
-   under **Clients** create a second **Desktop app** client for calendar and download its JSON. A
-   separate client keeps calendar and Gmail grants independent: revoking one leaves the other.
-3. Log in once per account, in your own terminal. This creates the account's Deadlines calendar
-   (or reuses it on later logins) and records its id with the credential:
+   **Google Auth Platform > Data Access** add the calendar scopes your config needs (table
+   above); under **Clients** create a second **Desktop app** client for calendar and download its
+   JSON. A separate client keeps calendar and Gmail grants independent: revoking one leaves the other.
+3. Log in once per account, in your own terminal. This creates the `create` calendars and
+   checks the `id` ones:
 
 ```sh
 CAL_ACCOUNTS=acme node index.js auth acme --calendar --client ~/secure/calendar_client.json
@@ -351,22 +383,19 @@ CAL_ACCOUNTS='*' node index.js --check
 "env": { "MAIL_ACCOUNTS": "acme", "CAL_ACCOUNTS": "acme" }
 ```
 
-Approve calendar changes in the harness (do not auto-allow `cal__add_deadline`,
-`cal__update_deadline` or `cal__delete_deadline`); listing can be auto-allowed.
-
 ### Importing an existing .ics
 
 ```sh
-CAL_ACCOUNTS=acme node index.js import-ics acme "/path/to/Compliance Calendar.ics"          # dry run
-CAL_ACCOUNTS=acme node index.js import-ics acme "/path/to/Compliance Calendar.ics" --apply
+CAL_ACCOUNTS=acme node index.js import-ics acme deadlines "/path/to/Compliance Calendar.ics"          # dry run
+CAL_ACCOUNTS=acme node index.js import-ics acme deadlines "/path/to/Compliance Calendar.ics" --apply
 ```
 
-UIDs, titles, notes, all-day dates and RRULEs are kept; a UID already present is skipped. Alarms
-Google cannot store are reported per event: more than 28 days ahead becomes 28 days, and an alarm
-after the start (such as `PT9H`) is dropped. Guests in the file are ignored.
+UIDs, titles, notes, dates and RRULEs are kept; a UID already present is skipped. Alarms Google
+cannot store are reported per event: more than 28 days ahead becomes 28 days, and an alarm after
+the start (such as `PT9H`) is dropped. Guests in the file are ignored.
 
-`revoke ACCOUNT --calendar` removes the login; the Deadlines calendar and its events stay in
-Google Calendar. The Testing-mode seven-day expiry (see [Expiration, revocation and Google requirements](#expiration-revocation-and-google-requirements)) applies to calendar logins too.
+`revoke ACCOUNT --calendar` removes the login; calendars and events stay in Google Calendar. The
+Testing-mode seven-day expiry (see [Expiration, revocation and Google requirements](#expiration-revocation-and-google-requirements)) applies to calendar logins too.
 
 ## License
 

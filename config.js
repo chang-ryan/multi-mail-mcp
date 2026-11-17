@@ -41,11 +41,61 @@ const BACKENDS = {
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in account addresses.
 const USER_RE = /^[^\s@\x00-\x1f\x7f]+@[^\s@\x00-\x1f\x7f]+$/;
-const ACCOUNT_KEYS = new Set(['type', 'user', 'label', 'port', 'backend', 'entity']);
+const ACCOUNT_KEYS = new Set(['type', 'user', 'label', 'port', 'backend', 'entity', 'calendars']);
 // Short compliance entity tag (acme, widgets, charity, home): calendar UIDs and the hub key on it.
 const ENTITY_RE = /^[a-z][a-z0-9]{0,15}$/;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in account labels.
 const CONTROL_RE = /[\x00-\x1f\x7f]/;
+
+const CAL_KEY_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+// Google calendar ids: "primary", addresses, group/import/holiday ids.
+const CAL_ID_RE = /^(?:primary|[A-Za-z0-9._#+-]{1,200}@[A-Za-z0-9.-]{1,100})$/;
+
+/**
+ * Calendars an account may use, keyed by a name of your choosing:
+ *   { "create": "Name" }  a calendar this app creates at login (scope calendar.app.created)
+ *   { "id": "primary" }   an existing calendar (scope calendar.events or calendar.events.readonly)
+ *   "*"                   any calendar the account can see, by id (adds calendarlist.readonly)
+ * Each has "access": "read" | "write"; "kind": "deadlines" turns on the compliance conventions.
+ */
+function parseCalendars(value, id, type) {
+  if (value === undefined) return undefined;
+  if (type !== 'gmail') throw new Error(`Account "${id}": calendars are Google-only for now`);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.keys(value).length)
+    throw new Error(`Account "${id}": "calendars" must be a non-empty object`);
+  const out = Object.create(null);
+  for (const [key, c] of Object.entries(value)) {
+    const where = `Account "${id}" calendar "${String(key).slice(0, 40)}"`;
+    if (key !== '*' && !CAL_KEY_RE.test(key)) throw new Error(`${where}: bad name`);
+    if (!c || typeof c !== 'object' || Array.isArray(c))
+      throw new Error(`${where}: must be an object`);
+    const allowed = key === '*' ? ['access'] : ['create', 'id', 'access', 'kind'];
+    for (const k of Object.keys(c))
+      if (!allowed.includes(k)) throw new Error(`${where}: unknown key "${k}"`);
+    if (!['read', 'write'].includes(c.access))
+      throw new Error(`${where}: "access" must be "read" or "write"`);
+    if (key !== '*') {
+      if ((c.create === undefined) === (c.id === undefined))
+        throw new Error(`${where}: give exactly one of "create" (new calendar) or "id" (existing)`);
+      if (
+        c.create !== undefined &&
+        (typeof c.create !== 'string' ||
+          !c.create.trim() ||
+          c.create.length > 100 ||
+          CONTROL_RE.test(c.create))
+      )
+        throw new Error(`${where}: "create" must be a calendar name`);
+      if (c.id !== undefined && (typeof c.id !== 'string' || !CAL_ID_RE.test(c.id)))
+        throw new Error(
+          `${where}: "id" must be "primary" or a calendar id such as name@group.calendar.google.com`,
+        );
+      if (c.kind !== undefined && c.kind !== 'deadlines')
+        throw new Error(`${where}: "kind" may only be "deadlines"`);
+    }
+    out[key] = Object.freeze({ ...c });
+  }
+  return Object.freeze(out);
+}
 
 function parsePort(v, id) {
   const n = Number(v);
@@ -126,6 +176,7 @@ function loadRegistry() {
       user: a.user,
       label: a.label || id,
       ...(a.entity ? { entity: a.entity } : {}),
+      ...(a.calendars ? { calendars: parseCalendars(a.calendars, id, a.type) } : {}),
       ...BACKENDS[a.type](a, id),
     });
   }
@@ -268,12 +319,14 @@ function calendarState() {
     const registry = loadRegistry();
     const spec = (process.env.CAL_ACCOUNTS || '').trim();
     let allowed = loadAllowlist(registry, 'CAL_ACCOUNTS');
-    // Only Google accounts have a calendar API; "*" means every Google account.
-    if (spec === '*') allowed = allowed.filter((id) => registry[id].type === 'gmail');
-    const other = allowed.filter((id) => registry[id].type !== 'gmail');
-    if (other.length)
-      throw new Error(`CAL_ACCOUNTS: calendar access is Google-only for now (${other.join(', ')})`);
-    if (!allowed.length) throw new Error('CAL_ACCOUNTS lists no Google accounts');
+    // "*" means every account with calendars configured in the registry.
+    if (spec === '*') allowed = allowed.filter((id) => registry[id].calendars);
+    const none = allowed.filter((id) => !registry[id].calendars);
+    if (none.length)
+      throw new Error(
+        `CAL_ACCOUNTS: no "calendars" configured in the registry for ${none.join(', ')}`,
+      );
+    if (!allowed.length) throw new Error('CAL_ACCOUNTS: no account has "calendars" configured');
     _calendar = Object.freeze({ registry, allowed });
   }
   return _calendar;
@@ -287,8 +340,19 @@ export const calendarScope = {
   allowedAccounts() {
     const { registry, allowed } = calendarState();
     return allowed.map((id) => {
-      const { label, user, entity } = registry[id];
-      return { id, label, address: user, entity: entity || id };
+      const { label, user, entity, calendars } = registry[id];
+      return {
+        id,
+        label,
+        address: user,
+        entity: entity || id,
+        calendars: Object.entries(calendars).map(([key, c]) => ({
+          calendar: key,
+          access: c.access,
+          ...(key === '*' ? { any: true } : c.create ? { created: c.create } : { id: c.id }),
+          ...(c.kind ? { kind: c.kind } : {}),
+        })),
+      };
     });
   },
   /** @param {string} [id] */

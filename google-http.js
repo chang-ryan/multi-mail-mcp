@@ -6,19 +6,19 @@ export const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 export const CALENDAR_ROOT = 'https://www.googleapis.com/calendar/v3/';
 export const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
 
-// Calendar access is confined to calendars this app created (ids end in @group.calendar.google.com).
-// Each path allows only the methods the deadline tools use; anything else is refused before sending.
-const CAL_ID = '[a-z0-9]{1,128}%40group\\.calendar\\.google\\.com';
+// Calendar paths and methods the event tools use; anything else (ACLs, calendar deletion,
+// moves, watches, calendar-list changes) is refused before sending. Which calendars an account
+// may reach is enforced per account in calendar-core.js against accounts.json.
+const CAL_ID = '[A-Za-z0-9._%+-]{1,300}';
+const EVENT_ID = '[A-Za-z0-9_-]{1,1024}';
 /** @type {[RegExp, string[]][]} */
 const CALENDAR_RULES = [
   [/^\/calendar\/v3\/calendars$/, ['POST']],
+  [/^\/calendar\/v3\/users\/me\/calendarList$/, ['GET']],
   [new RegExp(`^/calendar/v3/calendars/${CAL_ID}$`), ['GET']],
-  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events$`), ['GET']],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events$`), ['GET', 'POST']],
   [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events/import$`), ['POST']],
-  [
-    new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events/[a-z0-9_]{1,1024}$`),
-    ['GET', 'PATCH', 'DELETE'],
-  ],
+  [new RegExp(`^/calendar/v3/calendars/${CAL_ID}/events/${EVENT_ID}$`), ['GET', 'PATCH', 'DELETE']],
 ];
 
 function validateDestination(value, method) {
