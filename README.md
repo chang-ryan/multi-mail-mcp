@@ -140,7 +140,7 @@ are gitignored so it is not committed.
 
 ## Gmail OAuth setup and migration
 
-Use Node 18.17+ and macOS Keychain. No new runtime dependencies are required.
+Use Node 22 or newer and macOS Keychain. No new runtime dependencies are required.
 Never put the downloaded OAuth JSON, access tokens or refresh tokens in the registry, MCP config,
 source control or a chat. The desktop client file is needed only for an explicit login; its
 client credentials and refresh token are then stored together in Keychain. Login prints a Google
