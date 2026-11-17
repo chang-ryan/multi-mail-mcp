@@ -2,7 +2,7 @@
 
 /**
  * multi-mail-mcp — multi-account mail (read only: Proton via Bridge, Gmail via IMAP or API) and
- * Google Calendar deadlines over MCP. MAIL_ACCOUNTS and CAL_ACCOUNTS in the launching config set
+ * Google Calendar (per-calendar read/write, from accounts.json) over MCP. MAIL_ACCOUNTS and CAL_ACCOUNTS in the launching config set
  * which accounts this process may open for each; calendar tools exist only when CAL_ACCOUNTS is set.
  */
 
