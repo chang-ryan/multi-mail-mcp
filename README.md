@@ -334,12 +334,12 @@ Each Google account lists the calendars it may use in `accounts.json`, under nam
 
 **Scope follows the config.** Login requests exactly what the account's calendars need:
 
-| Calendars configured | Google scope | Who confines access |
-| --- | --- | --- |
-| only `create` | `calendar.app.created` | Google: the app can reach only calendars it created |
-| any `id` or `"*"`, all read | adds `calendar.events.readonly` | this server, against `accounts.json` |
-| any `id` or `"*"` with write | adds `calendar.events` | this server, against `accounts.json` |
-| `"*"` | adds `calendar.calendarlist.readonly` | (to list visible calendars) |
+| Calendars configured         | Google scope                          | Who confines access                                 |
+| ---------------------------- | ------------------------------------- | --------------------------------------------------- |
+| only `create`                | `calendar.app.created`                | Google: the app can reach only calendars it created |
+| any `id` or `"*"`, all read  | adds `calendar.events.readonly`       | this server, against `accounts.json`                |
+| any `id` or `"*"` with write | adds `calendar.events`                | this server, against `accounts.json`                |
+| `"*"`                        | adds `calendar.calendarlist.readonly` | (to list visible calendars)                         |
 
 Every login also includes `openid email`, used only to confirm the signed-in address. A config
 change that needs a different scope makes the server ask for `auth --calendar` again; the grant
